@@ -9,6 +9,7 @@ dist/
 /saves/
 CHRONOS-world*.json
 CHRONOS-earlier-timelines*.json
+chronos-earlier-timelines*.json
 chronos-world-day-*.json
 chronos-day*.json
 chronos-unreadable*.json
