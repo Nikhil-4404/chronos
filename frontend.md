@@ -1,0 +1,13 @@
+# Observation interface and renderer
+
+Full-screen 3D is the opening surface. A textured green/slate/copper HUD adds four settlement metrics, a small identity, side observation rail, camera/layer controls and a live clock/event ribbon. There is no home gate, comparison viewport, intervention panel or playback console. Space does not toggle time. World state belongs to colony.js; browser UI/storage/wall-clock ownership belongs to app.js.
+
+One temporary panel appears at a time. Residents has a name/occupation search and all living subjects; selected detail shows household, role, destination, current task and need gauges. Settlement lists all sites/places, their actual construction/delivery percentages and occupants. Chronicle shows real daily counts and recorded events with subject links. World contains stocks, lifetime counters, portable saves, recovery and a confirmed reset. Unknown/departed subjects receive a history message. Repeated panel updates preserve search input and stable list content unless it changes.
+
+Renderer: Three.js instanced parts with capacity matching 512 residents and 256 places. Architecture is rebuilt only when construction/delivery changes, uses type-specific farms/trees/quarry/care/shop/workshop details and six stored housing variants. Incomplete sites show foundations, stockpiles, scaffolding and rising walls before roofs/windows. Roads extend around active plots. Distant fake skyline and decorative cars were removed so they cannot appear to be simulated growth.
+
+Humanoid poses interpolate actual positions, with opposing gait, role props/helmets, working/eating/social activity and smaller children. Reused sub-street display offsets reduce overlap at shared nodes; they are presentation offsets. Rendered-pose memory is cleared per frame to avoid retaining dead generations. Repeating day/night uses the model clock. Environmental trees/water/smoke are decorative. Follow uses street-direction framing and canopy cutaway, and can turn abruptly at route corners; no interiors or first-person collision controller.
+
+Controls: orbit/pan/zoom, Street, Above and settlement framing; camera exploration does not affect simulation. Natural/Journeys/Wellbeing are overlays, not alternate futures. Reduced-motion disables nonessential ambient motion. Hidden viewports skip GPU rendering while wall time continues to accumulate.
+
+Accessibility: named native buttons/dialogs, visible focus, normal form keys, guide and HUD return. DOM lists expose every live person/place independently of raycasting. Mobile panels scroll internally; Follow closes the panel at 600 px and narrower. Browser checks and device limits are in status.md; no screen-reader equivalence is claimed from implementation alone.

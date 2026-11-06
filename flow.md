@@ -1,0 +1,11 @@
+# Observation and world lifecycle
+
+1. Open CHRONOS: read chronos.colony; validate and resume, or create 24 founders. A corrupt save is preserved and a temporary world runs with recovery/export tools. Earlier chronos.world is untouched.
+2. Render actual current/next snapshots. The wall clock schedules two simulation ticks per second. Residents choose routes/tasks; labor affects stocks/sites; daily processes handle weather, households and population. No observer action pauses this loop.
+3. Drag/zoom or choose a camera. Open one panel: Residents, Settlement, Chronicle or World. Selecting a person/place reveals current details; Locate focuses it. Follow tracks a living resident, with the mobile panel dismissed. Manual camera interaction cancels follow. A deceased selected resident shows a history message.
+4. World autosaves on a roughly ten-second wall-clock interval and on page hide. A raw-save compare guards concurrent tabs. A conflict stops overwrites, while this window remains an independent live world with export available.
+5. Return after sleep/closure: compute nonnegative elapsed ticks (maximum seven real days), process responsive batches, show remaining simulated days, and save recovery checkpoints. Each checkpoint backdates its time by outstanding work so reload resumes rather than discarding pending life.
+6. Export downloads the running model, including unfinished catch-up time. Import validates before offering replacement confirmation; cancellation leaves the running world intact. Confirmation replaces this living-world save and starts catch-up from the imported time. New world uses a fresh seed only after explicit confirmation. Export first to retain a world being replaced.
+7. Invalid JSON, oversize inputs and bad references show an error without replacing state. Unavailable/full storage keeps the world in memory and directs the observer to export. Graphics failure shows a readable recovery message; observation panels and saving continue.
+
+There is no login, backend request, external integration or publication in these flows. Fullscreen is optional; native denial shows a message. Guide and confirmation dialogs use native focus behavior. N/B/J/W/F/1/2/3/H/Escape are observation shortcuts; inputs/buttons retain ordinary keys.
