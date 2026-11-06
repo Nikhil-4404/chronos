@@ -1,41 +1,42 @@
-# Living-world delivery status
+# CHRONOS river-city implementation status
 
-Updated 2026-11-06. This request replaces the active timeline product. Earlier UI verification is historical, not evidence for the new model. Contracts: prd.md, requirements.md, core.md and flow.md.
+Updated 2026-11-07. Contracts are in prd.md, requirements.md, frontend.md and model.md. This record distinguishes local functional evidence from universal performance or production claims.
 
 Markers: `[ ] Planned`, `[-] Active`, `[i] Implemented — Verification Pending`, `[x] Verified Complete`, `[!] Blocked`, `[~] Deferred`.
 
-| Status | Acceptance | Evidence / limits |
+| Status | Scope | Acceptance / next evidence |
 | --- | --- | --- |
-| [x] Verified Complete | LIV-01, 05, 11 | Browser opens directly into one live 3D settlement; zero playback/comparison controls. Clock advanced through guide, HUD hide/return and panels. Search and follow, mobile follow dismissal, cameras and observation panels exercised. |
-| [x] Verified Complete | LIV-02–04 | Deterministic growth tests over 45 days; reserve/delivery/labor gating, no-worker site, working healers, household/capacity/resource invariants, births, migrants and building variants pass. Save continuation exercised beyond 100 days. |
-| [x] Verified Complete | LIV-06–07 | Browser observed expanded seed-731 fixtures with 58 and 138 residents, 21 and 39 completed places, construction sites and births. These are deterministic test fixtures, not a user's prediction. Actual journal/history, articulated residents, type-specific architecture and day/night rendered without console errors. |
-| [x] Verified Complete | LIV-08–09 | JSON continuation/validation and pending-recovery checkpoint tests pass. Native export/import exercised, invalid resident reference rejected and reset cancellation retained the current live world. Returning/importing backdated saves advanced days in browser. |
-| [i] Implemented — Verification Pending | LIV-10 failure injection | Autosave, corruption recovery, other-tab compare guard and storage-failure messages implemented. Ordinary saving/export exercised; quota, corrupt storage and multi-tab races have not all been deliberately injected in this pass. |
-| [x] Verified Complete | LIV-11 narrow layout | Measured 375×812: page equals viewport, top controls in bounds; panels and mobile following work. Ordinary desktop pane 892×812 exercised. Real touch hardware not tested. |
-| [x] Verified Complete | LIV-12 packaging and relevant checks | 29 tests pass (9 new colony cases, 8 activity cases, 12 retained legacy cases). Production/offline build passes including syntax/asset/license/size self-checks. Keyboard guide Escape, cameras and HUD return exercised. |
-| [i] Implemented — Verification Pending | Direct file launch / broader accessibility | Test browser denies file protocol; use of a local HTTP preview is verified. Other browsers, real touch, screen readers, forced WebGL loss, preference injection and low-end GPU profiling remain unverified. |
+| [x] Verified Complete | Persistent logistics and expansion | LIV-02–04,13–14: seed 731 develops beyond day 90; seeds 11/88 also grow. Conserved pickup/transport/unload, queued pier handling, interrupted jobs and full-queue recovery pass. |
+| [x] Verified Complete | Building additions, reuse and salvage | LIV-06,15: retained IDs/shells, real costs/labor, material loss and save continuation pass. At 512 places, eligible additions and maintenance continue. Distinct structural forms are rendered. |
+| [x] Verified Complete | Resident identity and movement | LIV-05,16: ID-stable appearance/offsets, timestamp anchoring, route corners and follow behavior pass. Browser frame samples are recorded below. |
+| [x] Verified Complete | Sun, Moon and environment | LIV-17: six pure environment tests plus actual sky views; seasonal ice affects routes. Frozen barges keep their load and wait for thaw; recovering cargo stays stationary until reached. Thaw reroutes carts onto bridges. |
+| [x] Verified Complete | Online delivery learning | LIV-18: completed outcomes update bounded tabular estimates; legal modes, persistence and deterministic continuation pass. Actual journey estimates are visible. Comparative policy superiority remains unverified. |
+| [x] Verified Complete | Background simulation loop | LIV-09,19: three runtime tests cover budgeted recovery, checkpoint timing and fractional restart. Embedded worker confirmed in browser; fallback receives code/test review, not a forced browser-failure test. |
+| [x] Verified Complete | Existing-world migration and packaging | LIV-08,10,12: strict schema-2 migration, conservation, schema-3 rejection/continuation, local raw backup, export/import and canceled reset verified. Single-file production build passes embedded syntax/license/size checks. |
+| [x] Verified Complete | Final source longevity | After the final fixes, two 730-day runs pass all 1,460 daily serialization/conservation validations. See outcomes below. Your actual browser world was restored and exported at day 679; the temporary QA server is stopped. |
+| [~] Deferred | Advanced institutions and detailed physics | Banking contagion, learned credit pricing, full ice/fluid/rigid-body cargo physics and coin wagons remain outside this implementation. |
 
-## Evidence
+## Verification evidence
 
-Windows, Node 22.21.1/npm 10.9.4, Codex in-app browser, 2026-11-06. `npm.cmd test`: 29 passed, 0 failed. `npm.cmd run build`: passed. Current self-contained game is 657,315 bytes, SHA-256 `4049CA375398FC1EC1D832BAC02D72CF1D9A81DA2A9F10B761A52075C2178B7E`. Root and dist copies are identical. Source archive is regenerated after documentation/QA completion.
+Windows, Node 22.21.1/npm 10.9.4, in-app Chromium/WebGL. `npm.cmd test`: 61 passed, zero failed/skipped. `npm.cmd run build`: regular site and identical root/dist self-contained HTML, approximately 770 KB. SHA-256: `169716c1982d652a1cc0dfc275fdbea17aeea7953e2c36044d907ff84c873722`. No dependency was added or upgraded.
 
-Brief browser canvas counters sampled about 165 FPS in the ordinary pane during early-world checks; no long-duration or cross-hardware performance claim. A final-model 730-day run completed in 9,356 ms with 275 residents, 106 places, 149 births and 1287 deaths; saves were validated every 30 days. This is an accelerated fictional simulation, not elapsed browser time or a prediction. Tests are fictional state transitions; no real-world data or predictions are involved.
+Browser checks cover the actual migrated city expanding from its earlier plateau to 1,024 residents/134 places, cargo inspection/following, changing architecture, the Sun/Moon/Sky camera, portable export/import, malformed-reference rejection, reset cancellation, guide/Escape, HUD hide/return and fullscreen. The real world was backed up before fixtures and restored afterward. Mobile 375×812 had no document overflow; camera controls fit and following dismissed the panel.
 
-## Boundaries
+Final-source longevity, stepping and validating every day:
 
-512 living people, 256 places, 90 daily samples, 80 recent events; no final day, but no claim of unlimited growth. Seven-real-day elapsed catch-up cap; browser-closed server execution is not implemented. Growth can stall or reverse from shortages, travel, health, deaths or capacity. Imported/replaced worlds use a separate schema-2 key; earlier timeline data and a compatible archived game are preserved. No website hosting deployment performed. Keep JSON exports for durable backups.
+| World | Simulated days | Final day | People / places | Completed deliveries | Additions / reuse / salvage |
+| --- | --- | --- | --- | --- | --- |
+| Fresh seed 731 | 730 | 731 | 1,024 / 128 | 234,787 | 309 / 0 / 18 |
+| Actual migrated export | 730 | 925 | 1,024 / 135 | 275,521 | 295 / 2 / 13 |
 
-## Final browser evidence
+Both runs preserve the four-child lifetime limit for either parent through deaths/repartnering. Tests also cover full shipment queues, the 512-place planning boundary and frozen/stranded barge recovery; limits cannot be tested only by a naturally grown 135-place world.
 
-- The restored opening colony continued naturally through day 18 with 62 living residents, 22 completed places and two construction sites; a storehouse inspector showed 10% work and 100% delivered materials. The final active world is restored from its pre-fixture export; mature QA fixtures were replaced.
-- Final packaged HTML was reloaded after implementation changes. The latest selected-subject heading shows the actual place name. Clock advanced while the guide and panels were open; Space did not introduce playback behavior. Hide/return and Above/frame cameras exercised.
-- Resident search, Locate/Follow, mobile panel dismissal, chronicle population bars, event inspection and current construction details exercised. Invalid-reference import displayed `Invalid resident reference.`; cancelled new-world confirmation retained the active population/history.
-- Backdated imports caught up while controls remained usable. Autosave showed recovery checkpoints, and reload resumed the saved colony. Pending elapsed time is also preserved by an assert-based continuation test.
-- Earlier timeline export remained available. Its current seven-branch save was exported as a portable backup; the new app has no writes to the old key. The archived earlier game matches the pre-change artifact.
-- Current screenshots: [living world](docs/images/living-world.png), [construction](docs/images/construction.png) and [chronicle](docs/images/chronicle.png). Browser fixtures and diagnostic scripts stay in work/, outside the source deliverable.
+Brief 240-frame windows: an actual 1,024-resident/134-place world at 892×812 recorded p95 12.2 ms/p99 18.1 ms; mobile recorded p95 6.2 ms/p99 12.0 ms. A separately labeled synthetic 1,024-resident/512-place capacity fixture on the final build recorded p95 6.2 ms/p99 12.1 ms, zero frames over 50 ms and `geometryClipped=0`, with the worker running and no console warnings/errors. These are local samples, not a soak test or a hardware guarantee. Overview rain fog was adjusted after visual QA so it no longer hides the expanded city.
 
-Final packaged reload: day 19, 64 living residents, 24 completed places and two active sites; no console warnings/errors. Native fullscreen enter/exit passed. The viewport override was reset, the loaded tab retained, and the owned QA server is stopped during teardown. Portable world backups remain local and are excluded from the public repository.
+Enforced limits: 1,024 people, 512 places, 160 shipments, 100 recent events, 120 daily records and a 2 MB import bound. The synthetic maximum fixture on the final source serialized to 870,541 bytes; a 144-tick Node profile measured 21.4 ms/tick, 17.1 ms/save and 2.9 ms/snapshot. It is a stress fixture, not evidence that every city naturally reaches 512 places. Growth remains demand/resource dependent and cannot expand without limits.
 
-## Public source repository
+## Remaining limits
 
-The user authorized a public GitHub repository on 2026-11-06. [Nikhil-4404/chronos](https://github.com/Nikhil-4404/chronos) was created and source pushed to `main`. GitHub repository metadata confirms public visibility and the `main` default branch. `git ls-remote` matched the initial source commit `f8ca4333d8422fdbcb304ca3360d2f2d19b47fad` with the local branch. Source, tests, specifications, screenshots and the self-contained game are included. Browser worlds, local backups, dependencies and intermediate work are excluded; website hosting is outside scope. The publication checks reran successfully: 29 tests and the production/offline build. The staged 30-file source set passed a targeted credential/local-path/saved-world check.
+The environment and compressed demography are fictional approximations. The travel table learns from simulated outcomes; no neural cognition or measured superiority over a fixed policy is claimed. Advanced institutions/physics listed above remain deferred. Other browsers/devices, extended GPU soak, full screen-reader equivalence, deliberate worker/storage failure injection and direct `file://` launching are unverified. The test browser denied that file protocol; HTTP use of the self-contained artifact is verified. Closed-page life is bounded catch-up on return, not a hosted service. This is a locally verified game, not a production deployment assessment.
+
+Source publication: https://github.com/Nikhil-4404/chronos is the existing public repository. Personal saves, local backups and work/ diagnostics are excluded from publication. No website hosting is part of this task. Temporary preview processes are stopped at handoff.

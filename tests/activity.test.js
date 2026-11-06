@@ -1,11 +1,65 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sampleNpcPose, npcDisplayOffset, blocksStreetView } from '../src/activity.js';
+import { sampleNpcPose, npcDisplayOffset, npcVisualSeed, blocksStreetView, renderFraction, updateRenderSample, smoothHeading, crossingHeight } from '../src/activity.js';
 import { createTimeline, getState } from '../src/simulation.js';
+
+test('resident appearance and street placement survive removal and reordering of other people', () => {
+  const before=Array.from({length:20},(_,i)=>`resident-${i+1}`);
+  const after=before.filter(id=>!['resident-2','resident-7','resident-12'].includes(id)).reverse();
+  const original=new Map(before.map(id=>[id,{offset:npcDisplayOffset(id),style:npcVisualSeed(id)}]));
+  for(const id of after)assert.deepEqual({offset:npcDisplayOffset(id),style:npcVisualSeed(id)},original.get(id));
+  const p={id:'resident-8',x:1,z:2,status:'Walking'};
+  assert.equal(sampleNpcPose(p,{...p,id:'resident-9',x:9},.8).x,1,'a different future resident must never move this one');
+});
+
+test('walking follows the street corner rather than cutting diagonally through a building', () => {
+  const p={id:'resident-3',x:.9,z:0,status:'Walking',route:[{x:.9,z:0},{x:1,z:0},{x:1,z:1}]};
+  const next={...p,x:1,z:.1};
+  const first=sampleNpcPose(p,next,.25,1),second=sampleNpcPose(p,next,.75,1);
+  assert.ok(Math.abs(first.x-.95)<1e-10);assert.equal(first.z,0);
+  assert.equal(second.x,1);assert.ok(Math.abs(second.z-.05)<1e-10);
+  assert.equal(first.heading,Math.PI/2);assert.equal(second.heading,0);
+});
+
+test('render time uses a single monotonic sample anchor and clamps late frames', () => {
+  assert.equal(renderFraction(1000,.2,1100,500),.4);
+  assert.equal(renderFraction(1000,.2,900,500),.2);
+  assert.equal(renderFraction(1000,.2,2500,500),1);
+  assert.equal(renderFraction(1000,.2,2500,500,false),.2);
+});
+
+test('the first authoritative same-tick packet replaces a static preview without UI rewinds', () => {
+  const initial={tick:18,seed:731,alpha:0,sampledAt:1000};
+  const preview=updateRenderSample(null,initial,1000);
+  const repaint=updateRenderSample(preview,initial,1200);
+  assert.equal(repaint,preview);assert.equal(renderFraction(repaint.sampledAt,repaint.alpha,1200),.4);
+  const authoritative=updateRenderSample(repaint,{...initial,alpha:.7,sampledAt:1300},1350);
+  assert.notEqual(authoritative,preview);assert.ok(Math.abs(renderFraction(authoritative.sampledAt,authoritative.alpha,1350)-.8)<1e-12);
+  const clicked=updateRenderSample(authoritative,{...initial,alpha:.1,sampledAt:1300},1400);
+  assert.equal(clicked,authoritative);assert.ok(Math.abs(renderFraction(clicked.sampledAt,clicked.alpha,1400)-.9)<1e-12);
+  assert.equal(updateRenderSample(clicked,initial,1400),clicked,'an older same-tick packet cannot rewind time');
+  const advanced=updateRenderSample(clicked,{...initial,tick:19,alpha:.05,sampledAt:1500},1500);
+  assert.equal(advanced.tick,19);assert.equal(renderFraction(advanced.sampledAt,advanced.alpha,1510),.07);
+});
+
+test('facing turns take the short arc and gait stays continuous at snapshot boundaries', () => {
+  const heading=smoothHeading(Math.PI-.1,-Math.PI+.1,.02);
+  assert.ok(heading>Math.PI-.1&&heading<Math.PI+.1);
+  const once=smoothHeading(0,1,.1),twice=smoothHeading(smoothHeading(0,1,.05),1,.05);
+  assert.ok(Math.abs(once-twice)<1e-12);
+  const p={id:'resident-5',x:0,z:0,status:'Walking',walked:1},next={...p,x:.2,walked:1.2},third={...next,x:.4,walked:1.4};
+  assert.equal(sampleNpcPose(p,next,1,2).stride,sampleNpcPose(next,third,0,3).stride);
+});
+
+test('raised river crossings have continuous ramps and leave ordinary streets on the ground', () => {
+  assert.equal(crossingHeight(0,-16),2.1);assert.equal(crossingHeight(8,16),2.1);
+  assert.equal(crossingHeight(10,-16),1.05);assert.equal(crossingHeight(12,-16),0);
+  assert.equal(crossingHeight(0,0),0);
+});
 
 test('colony occupations, meals, socializing and journeys choose their actual activity poses', () => {
   const p = { id: 'resident-18', x: 2, z: 4 };
-  for (const status of ['Building', 'Growing food', 'Gathering timber', 'Quarrying stone', 'Crafting tools', 'Hauling materials', 'Caring for neighbors']) {
+  for (const status of ['Building', 'Retrofitting a building', 'Salvaging materials', 'Loading cargo', 'Unloading cargo', 'Growing food', 'Gathering timber', 'Quarrying stone', 'Crafting tools', 'Hauling materials', 'Caring for neighbors']) {
     assert.equal(sampleNpcPose({ ...p, status }, p, 0, 10).activity, 'working');
   }
   assert.equal(sampleNpcPose({ ...p, status: 'Having lunch' }, p).activity, 'eating');

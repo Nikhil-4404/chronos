@@ -1,7 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { LIMITS } from './colony.js';
-import { sampleNpcPose, npcDisplayOffset, blocksStreetView } from './activity.js';
+import { environmentAt } from './environment.js';
+import { buildingForm } from './architecture.js';
+import { sampleNpcPose, npcDisplayOffset, npcVisualSeed, blocksStreetView, renderFraction, updateRenderSample, smoothHeading, crossingHeight } from './activity.js';
 
 const TILE = 8;
 const worldX = x => (x - 5) * TILE;
@@ -14,7 +16,7 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color('#344751');
-  scene.fog = new THREE.FogExp2('#344751', .0065);
+  scene.fog = new THREE.FogExp2('#344751', .0038);
   const camera = new THREE.PerspectiveCamera(43, 1, .12, 1000);
   camera.position.set(66, 57, 72);
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
@@ -50,6 +52,11 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   let cameraMode = 'orbit';
   let followId = null;
   let cinematic = false;
+  function cameraBounds(mode) {
+    controls.maxPolarAngle=mode==='sky'?Math.PI-.05:1.48;
+    controls.minDistance=mode==='sky'?12:4;
+    camera.fov=mode==='sky'?60:43;
+  }
   const viewChanged = () => { if (!applyingView) onViewChange?.(getView()); };
   const manualView = () => { if (followId) onFollowChange?.(null); followId = null; cinematic = false; };
   controls.addEventListener('change', viewChanged);
@@ -61,15 +68,44 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   sun.position.set(-36, 54, -24);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  Object.assign(sun.shadow.camera, { left: -65, right: 65, top: 58, bottom: -58, near: 1, far: 170 });
+  Object.assign(sun.shadow.camera, { left: -95, right: 95, top: 95, bottom: -95, near: 1, far: 350 });
   sun.shadow.bias = -.0003;
   sun.shadow.normalBias = .06;
-  scene.add(sun);
+  scene.add(sun, sun.target);
   const fill = new THREE.DirectionalLight('#6bb6c4', .65);
   fill.position.set(45, 15, 40);
   scene.add(fill);
 
   const textures = new Set();
+  const skyCenter = new THREE.Vector3();
+  const moonCanvas = document.createElement('canvas'); moonCanvas.width = moonCanvas.height = 96;
+  const moonContext = moonCanvas.getContext('2d'), moonMap = new THREE.CanvasTexture(moonCanvas);
+  moonMap.colorSpace = THREE.SRGBColorSpace; textures.add(moonMap);
+  const moonDisc = new THREE.Mesh(new THREE.PlaneGeometry(7, 7), new THREE.MeshBasicMaterial({ map: moonMap, transparent: true, depthWrite: false, fog: false }));
+  const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(3.2, 40), new THREE.MeshBasicMaterial({ color: '#ffe3a0', depthWrite: false, fog: false }));
+  moonDisc.renderOrder = sunDisc.renderOrder = -100; scene.add(moonDisc, sunDisc);
+  const haloCanvas = document.createElement('canvas'); haloCanvas.width = haloCanvas.height = 64;
+  const haloContext = haloCanvas.getContext('2d'), haloGradient = haloContext.createRadialGradient(32,32,3,32,32,32);
+  haloGradient.addColorStop(0, '#ffcf8ca0'); haloGradient.addColorStop(.3, '#ffc77a45'); haloGradient.addColorStop(1, '#ffc77a00'); haloContext.fillStyle = haloGradient; haloContext.fillRect(0,0,64,64);
+  const haloMap = new THREE.CanvasTexture(haloCanvas); textures.add(haloMap);
+  const sunHalo = new THREE.Sprite(new THREE.SpriteMaterial({ map: haloMap, transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending })); sunHalo.scale.set(30,30,1); sunHalo.renderOrder = -99; scene.add(sunHalo);
+  let moonPhaseStamp = -1;
+  function paintMoon(phase) {
+    const stamp = Math.floor(phase * 256); if (stamp === moonPhaseStamp) return; moonPhaseStamp = stamp;
+    const pixels = moonContext.createImageData(96,96), angle = phase * Math.PI * 2;
+    for (let y = 0; y < 96; y++) for (let x = 0; x < 96; x++) {
+      const nx = (x-47.5)/46, ny = (y-47.5)/46, radius = nx*nx+ny*ny, index = (y*96+x)*4;
+      if (radius > 1) continue;
+      const surface = Math.sqrt(1-radius), lit = Math.max(0,nx*Math.sin(angle)-surface*Math.cos(angle));
+      const craters = .81 + seeded(x*7+y*19)*.12 + Math.sin(nx*19+ny*11)*.04;
+      const value = (20+lit*230)*craters; pixels.data[index]=value*.94; pixels.data[index+1]=value*.98; pixels.data[index+2]=value; pixels.data[index+3]=Math.min(255,surface*1600);
+    }
+    moonContext.putImageData(pixels,0,0); moonMap.needsUpdate = true;
+  }
+  const starPositions = new Float32Array(500*3);
+  for (let i=0;i<500;i++) { const theta = seeded(i+80)*Math.PI*2, y=.12+seeded(i+912)*.88, r=Math.sqrt(1-y*y); starPositions.set([Math.cos(theta)*r*440,y*440,Math.sin(theta)*r*440],i*3); }
+  const starGeometry = new THREE.BufferGeometry(); starGeometry.setAttribute('position',new THREE.BufferAttribute(starPositions,3));
+  const stars = new THREE.Points(starGeometry,new THREE.PointsMaterial({color:'#d9e2cf',size:.65,transparent:true,opacity:0,depthWrite:false,fog:false})); stars.renderOrder=-98; scene.add(stars);
   function texture(kind) {
     const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128;
     const context = canvas.getContext('2d');
@@ -122,30 +158,34 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   }
   function makeDynamic(geometry, material, capacity) {
     const mesh = new THREE.InstancedMesh(geometry, material, capacity); mesh.count = 0; mesh.frustumCulled = false; mesh.castShadow = true;
-    mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 120); scene.add(mesh); return mesh;
+    mesh.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 400); scene.add(mesh); return mesh;
   }
 
   // Terrain continues to the horizon; the playable streets are not a floating display slab.
-  const ground = cube(0, -.17, 0, 400, .25, 400, materials.ground);
-  ground.material.map = maps.grass.clone(); ground.material.map.repeat.set(90, 90); textures.add(ground.material.map);
+  const ground = cube(0, -.17, 0, 1200, .25, 1200, materials.ground);
+  ground.material.map = maps.grass.clone(); ground.material.map.repeat.set(270, 270); textures.add(ground.material.map);
 
   const waterMaterial = new THREE.MeshPhysicalMaterial({ color: '#2c6869', roughness: .33, metalness: .2, clearcoat: .8 });
-  cube(0, -.025, 0, 9.7, .06, 400, waterMaterial);
+  const riverWater = cube(0, -.025, 0, 9.7, .06, 1200, waterMaterial);
+  const riverIce = cube(0, .02, 0, 9.65, .04, 1200, plain('#b3d0cb', { roughness:.35,transparent:true,opacity:0 })); riverIce.visible=false;
   const ripples = Array.from({ length: 105 }, (_, i) => ({ x: -4.3 + seeded(i + 10) * 8.6, y: .02, z: -80 + seeded(i + 200) * 160, sx: .035, sy: .008, sz: .7 + seeded(i) * 2.2 }));
   const rippleMesh = instances(boxGeometry, new THREE.MeshBasicMaterial({ color: '#a7c4b0', transparent: true, opacity: .18 }), ripples);
   const riverBanks = [];
   for (const x of [-5.05, 5.05]) {
-    cube(x, .08, 0, .38, .35, 160, materials.stone); cube(x + Math.sign(x) * .8, .08, 0, 1.2, .16, 80, materials.paving);
+    cube(x, .08, 0, .38, .35, 1200, materials.stone); cube(x + Math.sign(x) * .8, .08, 0, 1.2, .16, 220, materials.paving);
     for (let z = -38; z <= 38; z += 4) riverBanks.push({ x, y: .65, z, sx: .06, sy: 1.1, sz: .06 });
     riverBanks.push({ x, y: 1.05, z: 0, sx: .06, sy: .06, sz: 78 });
   }
   instances(boxGeometry, materials.rail, riverBanks);
   const bridgeBarriers = new THREE.Group(); scene.add(bridgeBarriers);
   for (const z of [2, 6]) {
-    cube(0, .18, worldZ(z), 16.6, .27, 3.2, materials.stone, true); cube(0, .33, worldZ(z), 16.5, .03, 2.12, materials.road);
+    cube(0, 2.28, worldZ(z), 16.6, .27, 3.2, materials.stone, true); cube(0, 2.43, worldZ(z), 16.5, .03, 2.12, materials.road);
+    for (const side of [-1,1]) { const ramp=cube(side*10,1.24,worldZ(z),4.5,.22,3.2,materials.stone,true); ramp.rotation.z=-side*Math.atan2(2.1,4); }
+    const bridgeArch = new THREE.TorusGeometry(1,.09,6,30,Math.PI);
     for (const side of [-1.45, 1.45]) {
-      cube(0, 1.04, worldZ(z) + side, 16.8, .08, .08, materials.rail); cube(0, .62, worldZ(z) + side, 16.8, .05, .07, materials.rail);
-      for (let x = -8; x <= 8; x += 1.1) cube(x, .68, worldZ(z) + side, .065, 1, .065, materials.rail);
+      cube(0, 3.14, worldZ(z) + side, 16.8, .08, .08, materials.rail); cube(0, 2.72, worldZ(z) + side, 16.8, .05, .07, materials.rail);
+      for (let x = -8; x <= 8; x += 1.1) cube(x, 2.78, worldZ(z) + side, .065, 1, .065, materials.rail);
+      const arch = new THREE.Mesh(bridgeArch,materials.stone); arch.position.set(0,.15,worldZ(z)+side); arch.scale.set(8,1.8,2.5); arch.castShadow=true; scene.add(arch);
     }
   }
   for (const x of [-7.4, 7.4]) {
@@ -159,96 +199,181 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
     trunkEntries.push({ x, y: .7 * size, z, sx: .12 * size, sy: 1.4 * size, sz: .12 * size });
     treeEntries.push({ x, y: 1.65 * size, z, sx: .8 * size, sy: 1.1 * size, sz: .8 * size, color: ['#456b4c', '#547d55', '#687a4c'][treeEntries.length % 3] });
   }
-  const architecture = [materials.brick, materials.plaster, materials.steel, materials.roof, materials.rust, materials.grass, materials.stone, materials.rail].map(m => makeDynamic(boxGeometry, m, 12000));
-  const windows = makeDynamic(boxGeometry, materials.warmWindow, 12000);
+  // Bounds include level-five scaffolding/additions (wood) and all 25 crops per farm.
+  const partBudgets=[8,8,8,8,36,28,12,16];
+  const architecture = [materials.brick, materials.plaster, materials.steel, materials.roof, materials.rust, materials.grass, materials.stone, materials.rail].map((m,i) => makeDynamic(boxGeometry, m, LIMITS.buildings*partBudgets[i]));
+  // Two care-house wings: 96 windows; converted rooms add at most 40 more.
+  const windows = makeDynamic(boxGeometry, materials.warmWindow, LIMITS.buildings * 136);
+  renderer.domElement.dataset.windowCapacity=String(windows.instanceMatrix.count);
   const roadMesh = makeDynamic(boxGeometry, materials.road, 3000); roadMesh.castShadow = false;
   const roofPeaks = makeDynamic(new THREE.ConeGeometry(1, 1, 4), materials.rust, LIMITS.buildings * 4);
+  const gableShape=new THREE.Shape();gableShape.moveTo(-.5,0);gableShape.lineTo(.5,0);gableShape.lineTo(0,.65);gableShape.closePath();
+  const gableGeometry=new THREE.ExtrudeGeometry(gableShape,{depth:1,bevelEnabled:false});gableGeometry.translate(0,0,-.5);
+  const gables=makeDynamic(gableGeometry,materials.rust,LIMITS.buildings*4);
+  const arches=makeDynamic(new THREE.TorusGeometry(1,.12,6,16,Math.PI),materials.body,LIMITS.buildings*8);
+  const columns=makeDynamic(new THREE.CylinderGeometry(1,1,1,10),materials.body,LIMITS.buildings*8);
+  const domes=makeDynamic(new THREE.SphereGeometry(1,12,8,0,Math.PI*2,0,Math.PI/2),materials.steel,LIMITS.buildings);
   const buildingPicks = makeDynamic(boxGeometry, new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }), LIMITS.buildings);
   buildingPicks.userData.kind = 'building'; buildingPicks.userData.entries = [];
   const buildingMeshes = [buildingPicks];
+  const clearedTrees=new Set();
   let architectureStamp = '';
   function syncArchitecture() {
-    const stamp = state.buildings.map(b => `${b.id}:${b.progress.toFixed(3)}:${b.delivered.toFixed(2)}`).join('|');
+    const stamp = state.buildings.map(b => `${b.id}:${Math.floor(b.progress*20)}:${b.level||1}:${b.state||'Active'}:${Math.floor((b.condition??100)/10)}:${b.additions?.join(',')||''}:${b.project?.type||''}:${Math.floor((b.project?.progress||0)*20)}`).join('|');
     if (stamp === architectureStamp) return; architectureStamp = stamp;
-    for (const mesh of [...architecture, windows, roofPeaks, roadMesh, buildingPicks]) mesh.count = 0;
-    buildingInfo.length = 0; buildingPicks.userData.entries = [];
-    const palettes = ['#b99573', '#9e644e', '#b8b59b', '#7c9b91', '#68818e', '#b99863'];
-    const roads = new Set();
-    function part(mesh, x, y, z, sx, sy, sz, tint = null, yaw = 0) {
-      position.set(x, y, z); scale.set(sx, sy, sz); quaternion.setFromAxisAngle(yAxis, yaw); matrix.compose(position, quaternion, scale);
-      if (mesh.count >= mesh.instanceMatrix.count) return;
-      mesh.setMatrixAt(mesh.count, matrix); if (tint) mesh.setColorAt(mesh.count, color.set(tint)); mesh.count++;
+    const meshes=[...architecture,windows,roofPeaks,gables,arches,columns,domes,roadMesh,buildingPicks];
+    for (const mesh of meshes) mesh.count = 0;
+    buildingInfo.length=0;buildingPicks.userData.entries=[];
+    const palettes=['#c4a37b','#b3795d','#b9bea6','#7e9c91','#778f9a','#b49b73'];
+    const roads=new Set();let clipped=0;
+    function part(mesh,x,y,z,sx,sy,sz,tint=null,yaw=0) {
+      if(mesh.count>=mesh.instanceMatrix.count){clipped++;return;}
+      position.set(x,y,z);scale.set(sx,sy,sz);quaternion.setFromAxisAngle(yAxis,yaw);matrix.compose(position,quaternion,scale);
+      mesh.setMatrixAt(mesh.count,matrix);if(tint)mesh.setColorAt(mesh.count,color.set(tint));mesh.count++;
     }
-    for (const b of state.buildings) {
-      const x = worldX(b.x), z = worldZ(b.z), v = b.variant, progress = b.progress, ready = progress >= 1;
-      const width = 3.8 + (v % 3) * .5, depth = 3.8 + ((v + 1) % 3) * .5;
-      const garden = ['farm', 'park', 'forestry', 'quarry'].includes(b.kind);
-      const height = garden ? .4 : b.kind === 'home' ? 2.6 + Math.floor(v / 2) * 1.25 : b.kind === 'workshop' ? 4 + v * .45 : b.kind === 'hospital' ? 4.1 : 2.8;
-      const tint = palettes[v], material = architecture[b.kind === 'workshop' ? 2 : v % 3];
-      buildingInfo.push({ ...b, height, width, depth, baseColor: tint, worldX: x, worldZ: z });
-      buildingPicks.userData.entries.push({ id: b.id });
-      part(buildingPicks, x, height / 2, z, width, height + 1, depth);
-      part(architecture[6], x, .13, z, 6.1, .2, 6.1, ready ? '#7c8273' : '#a49173');
-      for (const [axis, line, other] of [['x', b.entrance.x, b.entrance.z], ['x', b.entrance.x + 1, b.entrance.z], ['z', b.entrance.z, b.entrance.x], ['z', b.entrance.z + 1, b.entrance.x]]) {
-        const key = `${axis}:${line}:${other}`; if (roads.has(key)) continue; roads.add(key);
-        part(roadMesh, axis === 'x' ? worldX(line) : worldX(other + .5), .08, axis === 'z' ? worldZ(line) : worldZ(other + .5), axis === 'x' ? 1.9 : 8, .1, axis === 'z' ? 1.9 : 8);
+    function scaffold(x,z,width,depth,height) {
+      for(const dx of [-width/2-.4,width/2+.4])for(const dz of [-depth/2-.4,depth/2+.4])part(architecture[7],x+dx,height/2,z+dz,.075,height,.075,'#b49b73');
+      for(let y=1;y<height;y+=1.5)for(const dz of [-depth/2-.4,depth/2+.4])part(architecture[4],x,y,z+dz,width+.9,.075,.075,'#c3a373');
+    }
+    function roof(x,y,z,width,depth,style,tint='#8a624b') {
+      if(style==='gable')part(gables,x,y,z,width+.15,1.7,depth+.2,tint);
+      else part(architecture[3],x,y+.14,z,width+.15,.22,depth+.15,'#74847b');
+    }
+    function facade(x,z,width,depth,height,active=true) {
+      const rows=Math.max(1,Math.floor(height/1.25)),cols=Math.max(2,Math.floor(width/1.25));
+      for(let row=0;row<rows;row++)for(let col=0;col<cols;col++)for(const side of [-1,1]) {
+        const offset=(col-(cols-1)/2)*1.13;
+        part(windows,x+offset,1+row*1.25,z+side*(depth/2+.035),.46,.62,.035,active?'#ffffff':'#16251f');
       }
-      if (!ready) {
-        for (const dx of [-2.7, 2.7]) for (const dz of [-2.7, 2.7]) part(architecture[7], x + dx, 1.7, z + dz, .09, 3.3, .09, '#b3986c');
-        for (const y of [1, 2.4]) for (const dz of [-2.7, 2.7]) part(architecture[4], x, y, z + dz, 5.6, .09, .09, '#d0a161');
-        for (let i = 0; i < 4; i++) part(architecture[4], x - 2 + i * .4, .35, z - 2, .3, .4, 1.5, '#a98057');
-        part(architecture[4], x + 2.7, 4, z + 2.7, .12, 8, .12, '#e1ad59');
-        part(architecture[4], x + .6, 7.6, z + 2.7, 5, .12, .12, '#e1ad59');
+      for(let row=0;row<rows;row++)for(const side of [-1,1])part(windows,x+side*(width/2+.035),1+row*1.25,z,.035,.62,.5,active?'#ffffff':'#16251f');
+    }
+    for(const b of state.buildings) {
+      const x=worldX(b.x),z=worldZ(b.z),form=buildingForm(b),v=form.variant;
+      const {width,depth,height}=form,progress=b.progress,ready=progress>=1,project=b.project;
+      const derelict=b.state==='Derelict',active=b.state!=='Vacant'&&!derelict;
+      color.set(palettes[v]);if(derelict)color.lerp(new THREE.Color('#555c53'),.6);else if(!active)color.multiplyScalar(.8);
+      const tint='#'+color.getHexString(),material=architecture[b.kind==='workshop'?2:v%3];
+      buildingInfo.push({...b,height,width,depth,baseColor:tint,worldX:x,worldZ:z});
+      buildingPicks.userData.entries.push({id:b.id});part(buildingPicks,x,height/2,z,width,height+1.6,depth);
+      part(architecture[6],x,.13,z,6.2,.2,6.2,ready?'#8b9180':'#ad9e80');
+      for(const [axis,line,other]of[['x',b.entrance.x,b.entrance.z],['x',b.entrance.x+1,b.entrance.z],['z',b.entrance.z,b.entrance.x],['z',b.entrance.z+1,b.entrance.x]]) {
+        const key=`${axis}:${line}:${other}`;if(roads.has(key))continue;roads.add(key);
+        part(roadMesh,axis==='x'?worldX(line):worldX(other+.5),.08,axis==='z'?worldZ(line):worldZ(other+.5),axis==='x'?1.9:8,.1,axis==='z'?1.9:8);
       }
-      if (garden && ready) {
-        if (b.kind === 'farm') for (let row = 0; row < 5; row++) {
-          part(architecture[4], x - 2 + row, .27, z, .65, .15, 5, '#65503c');
-          for (let col = 0; col < 5; col++) part(architecture[5], x - 2 + row, .5 + (v % 2) * .2, z - 2 + col, .4, .5, .45, v % 2 ? '#9faa52' : '#598746');
-        }
-        if (b.kind === 'park') {
-          part(architecture[5], x, .26, z, 5.8, .13, 5.8, '#3d6948');
-          part(architecture[6], x, .4, z, 1.1, .4, 1.1, '#8bb7b2');
-          for (const side of [-1.8, 1.8]) part(architecture[4], x + side, .5, z + 1.8, 1.4, .2, .6, '#a67a51');
-        }
-        if (b.kind === 'forestry') for (const dx of [-1.5, 1.4]) for (const dz of [-1.6, 1.2]) {
-          part(architecture[4], x + dx, 1, z + dz, .2, 2, .2, '#665341');
-          part(roofPeaks, x + dx, 2.3, z + dz, 1.3, 3.1, 1.3, '#52734d');
-        }
-        if (b.kind === 'quarry') for (let i = 0; i < 7; i++) part(architecture[6], x - 2 + (i % 3) * 1.3, .5 + (i % 2) * .3, z - 1.5 + Math.floor(i / 3) * 1.2, 1.1, 1 + (i % 2) * .5, 1, '#9da399');
+      if(!ready||project) {
+        scaffold(x,z,width,depth,height+(project?.type==='expand'?2.2:.9));
+        for(let i=0;i<4;i++)part(architecture[4],x-width/2+.3+i*.33,.35,z-depth/2+.5,.25,.4,1.2,'#a67f53');
+      }
+      if(form.footprint==='dock') {
+        const side=b.entrance.x<5?1:-1;
+        const builtLength=Math.max(.15,4.5*progress);
+        part(architecture[4],x+side*(builtLength-4.5)/2,.35,z,builtLength,.22,4.1,'#b3966b');
+        for(const dx of [-1.8,1.8])for(const dz of [-1.7,1.7])part(columns,x+dx,-.1,z+dz,.12,1.2,.12,'#6b6248');
+        if(progress>.65) {part(architecture[4],x-side*.8,2.4,z,.22,4.2,.22,'#a68959');part(architecture[4],x+side*.3,4.2,z,3.2,.2,.25,'#c3a46c');}
+        part(architecture[7],x-side*1.3,.85,z-1.7,1.3,1.05,.8,'#738a7e');
+        for(const dz of [-1.6,1.6])part(architecture[7],x,.7,z+dz,4.4,.08,.08,'#7e8b77');
         continue;
       }
-      const wallHeight = Math.max(.12, height * progress);
-      part(material, x, wallHeight / 2 + .2, z, width, wallHeight, depth, tint);
-      if (progress > .85) {
-        if (b.kind === 'home' && v % 2 === 0) part(roofPeaks, x, height + .85, z, width * .75, 1.7, depth * .75, '#915e46', Math.PI / 4);
-        else { part(architecture[3], x, height + .3, z, width + .25, .2, depth + .25, '#3e5555'); part(architecture[2], x - .8, height + .6, z, 1.1, .5, 1.3, '#6e8985'); }
+      if(['field','woodland','quarry','garden'].includes(form.footprint)&&ready) {
+        if(form.footprint==='field') {
+          for(let row=0;row<5;row++) {
+            part(architecture[4],x-2+row,.27,z,.65,.15,5,'#65503c');
+            for(let col=0;col<5;col++)part(architecture[5],x-2+row,.5+(v%2)*.2,z-2+col,.4,.5,.45,v%2?'#b1ad61':'#719253');
+          }
+          part(architecture[4],x+1.8,.85,z-1.9,1.2,1.2,1.3,'#957552');roof(x+1.8,1.5,z-1.9,1.3,1.4,'gable');
+        }
+        if(form.footprint==='garden') {
+          part(architecture[5],x,.26,z,5.8,.13,5.8,'#56855c');part(architecture[6],x,.4,z,1.2,.4,1.2,'#a3c6bd');
+          for(const side of [-1.9,1.9])part(architecture[4],x+side,.5,z+1.9,1.5,.2,.6,'#b28d61');
+          for(const dx of [-1,1])for(const dz of [-1,1])part(columns,x+dx,.95,z+dz,.07,1.5,.07,'#9b9272');roof(x,1.7,z,2.5,2.5,'gable');
+        }
+        if(form.footprint==='woodland')for(const dx of [-1.5,1.4])for(const dz of [-1.6,1.2]) {
+          part(architecture[4],x+dx,1,z+dz,.2,2,.2,'#776047');part(roofPeaks,x+dx,2.3,z+dz,1.3,3.1,1.3,'#638354');
+        }
+        if(form.footprint==='quarry')for(let i=0;i<7;i++)part(architecture[6],x-2+(i%3)*1.3,.5+(i%2)*.3,z-1.5+Math.floor(i/3)*1.2,1.1,1+(i%2)*.5,1,'#a9b0a1');
+        continue;
       }
-      if (!ready) continue;
-      part(architecture[4], x, .85, z + depth / 2 + .025, .7, 1.4, .06, '#334b48');
-      const floors = Math.max(1, Math.floor(height / 1.25));
-      for (let floor = 0; floor < floors; floor++) for (let col = 0; col < 3; col++) for (const side of [-1, 1]) {
-        part(windows, x - 1.2 + col * 1.2, 1 + floor * 1.2, z + side * (depth / 2 + .03), .5, .6, .04);
-        part(windows, x + side * (width / 2 + .03), 1 + floor * 1.2, z - 1.2 + col * 1.2, .04, .6, .5);
+      const wallHeight=Math.max(.12,height*progress),roofReady=progress>.85&&!(b.additions||[]).includes('salvaged-roof')&&!(project?.type==='salvage'&&project.progress>.12);
+      if(form.footprint==='courtyard') {
+        for(const side of [-1,1]) {
+          part(material,x+side*width*.34,wallHeight/2+.2,z,width*.3,wallHeight,depth,tint);
+          if(roofReady)roof(x+side*width*.34,height+.2,z,width*.3,depth,form.roof==='dome'?'flat':form.roof);
+          if(ready)facade(x+side*width*.34,z,width*.3,depth,height,active);
+        }
+        part(material,x,wallHeight/2+.2,z-depth*.36,width*.4,wallHeight,depth*.28,tint);
+        if(roofReady)roof(x,height+.2,z-depth*.36,width*.4,depth*.28,'flat');
+        part(architecture[5],x,.3,z+.3,width*.32,.14,depth*.6,'#7b946c');
+        if(b.kind==='hospital'&&roofReady) {
+          for(const side of [-1,1])part(arches,x+side*1.6,1.1,z+depth/2+.04,.65,1,1,'#c4c4a7');
+          part(columns,x,height+.1,z-depth*.35,1,1.1,1,'#bbc1a9');part(domes,x,height+.65,z-depth*.35,1.15,1.2,1.15,'#729b91');
+        }
+      } else if(form.footprint==='L'||form.footprint==='hall') {
+        part(material,x-width*.18,wallHeight/2+.2,z,width*.64,wallHeight,depth,tint);
+        part(material,x+width*.31,wallHeight/2+.2,z-depth*.27,width*.36,wallHeight,depth*.46,tint);
+        if(roofReady) {roof(x-width*.18,height+.2,z,width*.64,depth,form.roof);roof(x+width*.31,height+.2,z-depth*.27,width*.36,depth*.46,form.roof);}
+        if(ready) {facade(x-width*.18,z,width*.64,depth,height,active);facade(x+width*.31,z-depth*.27,width*.36,depth*.46,height,active);}
+        part(architecture[4],x+width*.28,.65,z+depth*.22,width*.35,.8,depth*.33,'#9b815b');
+      } else if(form.footprint==='market') {
+        part(material,x,wallHeight/2+.2,z-depth*.25,width,wallHeight,depth*.48,tint);
+        if(roofReady)roof(x,height+.2,z-depth*.25,width,depth*.48,'gable');
+        if(ready)for(let stall=0;stall<3;stall++) {
+          const sx=x-1.8+stall*1.8;part(architecture[4],sx,.85,z+1.2,1.5,1.1,.75,'#ad8958');
+          part(architecture[3],sx,2.1,z+1.1,1.65,.16,1.5,['#a8b283','#c29f70','#82a79d'][stall]);
+          for(const side of [-.65,.65])part(columns,sx+side,1.4,z+1.65,.045,2.5,.045,'#99895e');
+        }
+      } else {
+        part(material,x,wallHeight/2+.2,z,width,wallHeight,depth,tint);
+        if(roofReady)roof(x,height+.2,z,width,depth,form.roof);
+        if(ready)facade(x,z,width,depth,height,active);
       }
-      if (v % 3 === 1) for (const side of [-1, 1]) part(architecture[3], x + side * width * .35, 1.6, z + depth / 2 + .6, .08, 2.8, .08, '#6d7f73');
-      if (b.kind === 'shop') part(architecture[4], x, 2.2, z + depth / 2 + .6, width + .1, .16, 1.4, '#b89051');
-      if (b.kind === 'hospital') { part(architecture[7], x, height + .5, z, 1.4, .1, .4, '#88d2bc'); part(architecture[7], x, height + .5, z, .4, .1, 1.4, '#88d2bc'); }
-      if (b.kind === 'workshop') { part(architecture[6], x + 1.3, height + .6, z - 1, .55, 1.4, .55, '#687970'); part(architecture[3], x, height + .45, z, width * .7, .16, 1.6, '#345b6d'); }
+      if(!ready)continue;
+      part(architecture[4],x,.85,z+depth/2+.035,.7,1.4,.06,derelict?'#7c7156':'#40594d');
+      if(form.footprint==='gallery') {
+        for(const side of [-1,1])part(columns,x+side*width*.4,height/2,z+depth/2+.55,.07,height,.07,'#a49472');
+        part(architecture[4],x,height*.55,z+depth/2+.55,width+.2,.14,1.1,'#b39b73');
+        for(let col=0;col<7;col++)part(architecture[7],x-width/2+col*width/6,height*.55+.5,z+depth/2+1,.04,.9,.04,'#c3b997');
+      }
+      if(form.footprint==='tower') {
+        for(const side of [-1,1])part(architecture[6],x+side*width*.45,height+.6,z,width*.12,1.1,depth,'#acb49c');
+        part(architecture[6],x,height+.6,z-depth*.45,width,1.1,depth*.12,'#acb49c');
+      }
+      if(b.kind==='workshop') {part(architecture[6],x-width*.3,height+.8,z-depth*.2,.55,1.8,.55,'#8e9989');part(architecture[2],x-width*.18,height+.45,z,width*.45,.15,depth*.6,'#557c7c');}
+      if((b.additions||[]).includes('shopfront')) {
+        part(architecture[4],x,1.8,z+depth/2+.6,width*.82,.15,1.2,'#be9a69');part(architecture[4],x,.65,z+depth/2+.6,width*.8,.65,.65,'#9f7d50');
+      }
+      if((b.additions||[]).includes('courtyard-shed')) {part(architecture[4],x+width*.3,.9,z-depth*.2,1.5,1.5,2,'#aa8c60');roof(x+width*.3,1.7,z-depth*.2,1.6,2.1,'flat');}
+      if((b.additions||[]).includes('converted-home')) {part(architecture[1],x,height*.3,z+depth*.25,width*.7,height*.6,.2,'#b5b499');facade(x,z+depth*.22,width*.7,depth*.1,height*.6,active);}
+      if(project?.type==='expand') {
+        const rise=1.6*project.progress;part(material,x,height+.2+rise/2,z,width*.72,Math.max(.03,rise),depth*.72,tint);
+      }
+      if(derelict)for(const side of [-1,1])part(architecture[4],x+side,1.5,z+depth/2+.08,.75,.12,.08,'#8d7855');
+      if((b.inventory?.wood||0)>4)for(let i=0;i<3;i++)part(architecture[4],x+width*.35,.35+i*.12,z+depth*.32,.9,.13,.7,'#bb9b6c');
     }
-    powerBuilding = buildingInfo.find(b => b.kind === 'workshop' && b.progress === 1);
-    for (const mesh of [...architecture, windows, roofPeaks, roadMesh, buildingPicks]) { mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true; }
+    skyCenter.set(buildingInfo.reduce((sum,b)=>sum+b.worldX,0)/Math.max(1,buildingInfo.length),0,buildingInfo.reduce((sum,b)=>sum+b.worldZ,0)/Math.max(1,buildingInfo.length));
+    clearedTrees.clear();
+    treeEntries.forEach((entry,i)=>{if(buildingInfo.some(b=>Math.abs(b.worldX-entry.x)<b.width/2+.6&&Math.abs(b.worldZ-entry.z)<b.depth/2+.6))clearedTrees.add(i);});
+    trunkEntries.forEach((entry,i)=>{position.set(entry.x,entry.y,entry.z);scale.set(entry.sx,entry.sy,entry.sz);if(clearedTrees.has(i))scale.setScalar(0);matrix.compose(position,quaternion.identity(),scale);naturalTrunks.setMatrixAt(i,matrix);});naturalTrunks.instanceMatrix.needsUpdate=true;
+    powerBuilding=buildingInfo.find(b=>b.kind==='workshop'&&b.progress===1&&b.state!=='Derelict');
+    for(const mesh of meshes) {mesh.instanceMatrix.needsUpdate=true;if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;}
+    renderer.domElement.dataset.geometryClipped=String(clipped);renderer.domElement.dataset.windowInstances=String(windows.count);
   }
   for (const side of [-1, 1]) for (let i = 0; i < 27; i++) {
     const z = -37 + i * 2.8; if (Math.abs(z - worldZ(2)) > 2 && Math.abs(z - worldZ(6)) > 2) addTree(side * 6.4, z, .9 + seeded(i + 83) * .4);
   }
   for (let i = 0; i < 35; i++) { const side = i % 2 ? -1 : 1; addTree(side * (46 + seeded(i + 1) * 18), -48 + seeded(i + 16) * 96, 1.3 + seeded(i) * .8); }
-  instances(new THREE.CylinderGeometry(1, 1, 1, 6), materials.trunk, trunkEntries, true);
+  const naturalTrunks=instances(new THREE.CylinderGeometry(1, 1, 1, 6), materials.trunk, trunkEntries, true);
   const trees = instances(new THREE.IcosahedronGeometry(1, 1), materials.tree, treeEntries, true);
   for (const x of [1, 3, 7, 9]) for (const z of [1, 3, 5, 7]) {
     const px = worldX(x) + 1.3, pz = worldZ(z) + 1.3; cube(px, 1.55, pz, .08, 2.9, .08, materials.rail); cube(px - .32, 2.95, pz, .72, .07, .07, materials.rail);
     lamps.push({ x: px - .6, y: 2.91, z: pz, sx: .3, sy: .08, sz: .2, east: x > 5 });
   }
   const lampMesh = instances(boxGeometry, materials.warmWindow, lamps);
+  const weatherPositions = new Float32Array(360*3);
+  const weatherGeometry = new THREE.BufferGeometry(); weatherGeometry.setAttribute('position',new THREE.BufferAttribute(weatherPositions,3));
+  const precipitation = new THREE.Points(weatherGeometry,new THREE.PointsMaterial({color:'#c6e0e1',size:.12,transparent:true,opacity:.4,depthWrite:false})); precipitation.frustumCulled=false; scene.add(precipitation);
+  // Clouds stay above the city camera's full orbit envelope, including the high overview.
+  const cloudEntries = Array.from({length:30},(_,i)=>({x:(seeded(i+700)-.5)*360,y:560+seeded(i+705)*80,z:(seeded(i+710)-.5)*360,sx:12+seeded(i+720)*16,sy:2+seeded(i+730)*3,sz:6+seeded(i+740)*8}));
+  const clouds = instances(new THREE.IcosahedronGeometry(1,2),new THREE.MeshBasicMaterial({color:'#bdc9c3',transparent:true,opacity:0,depthWrite:false,fog:false}),cloudEntries); clouds.castShadow=false;
   // Emissive pools light the street without dozens of dynamic point lights.
   const poolGeometry = new THREE.CircleGeometry(1, 20); poolGeometry.rotateX(-Math.PI / 2);
   const pools = makeDynamic(poolGeometry, new THREE.MeshBasicMaterial({ color: '#ffc580', transparent: true, opacity: .13, depthWrite: false, blending: THREE.AdditiveBlending }), lamps.length); pools.castShadow = false;
@@ -260,6 +385,10 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   const npcPicks = makeDynamic(new THREE.SphereGeometry(1, 6, 5), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false }), capacity); npcPicks.castShadow = false; npcPicks.userData.kind = 'citizen';
   const npcColors = ['#d18a42', '#438e8c', '#b9b9a1', '#7e6985', '#ae6547', '#597b9b', '#9caa73', '#c8a16d'], skinColors = ['#c69773', '#835d42', '#dda98a', '#a87955', '#e0b99d', '#6d4938'];
   const lastPoses = new Map();
+  const headings = new Map();
+  const carts = makeDynamic(boxGeometry,materials.body,LIMITS.shipments), cartWheels = makeDynamic(new THREE.CylinderGeometry(1,1,1,10).rotateZ(Math.PI/2),materials.dark,LIMITS.shipments*4);
+  const barges = makeDynamic(boxGeometry,materials.body,LIMITS.shipments), bargeRims = makeDynamic(boxGeometry,materials.body,LIMITS.shipments*4), freight = makeDynamic(boxGeometry,materials.body,LIMITS.shipments*6);
+  const dockHooks=makeDynamic(boxGeometry,materials.rail,LIMITS.buildings), dockLoads=makeDynamic(boxGeometry,materials.body,LIMITS.buildings);
   const smokeGeometry = new THREE.BufferGeometry(), smokePositions = new Float32Array(24 * 3);
   smokeGeometry.setAttribute('position', new THREE.BufferAttribute(smokePositions, 3));
   const smoke = new THREE.Points(smokeGeometry, new THREE.PointsMaterial({ color: '#b1b5a4', size: .65, transparent: true, opacity: .2, depthWrite: false, sizeAttenuation: true })); smoke.frustumCulled = false; scene.add(smoke);
@@ -268,29 +397,43 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   const selectionRing = new THREE.Mesh(new THREE.RingGeometry(.47, .56, 40), new THREE.MeshBasicMaterial({ color: '#ffbd70', side: THREE.DoubleSide, depthWrite: false })); selectionRing.rotation.x = -Math.PI / 2; selectionRing.visible = false; scene.add(selectionRing);
   const routeMaterial = new THREE.MeshBasicMaterial({ color: '#80d1c6', transparent: true, opacity: .82 }), routeGroup = new THREE.Group(); scene.add(routeGroup);
   const routeFlows = makeDynamic(boxGeometry, new THREE.MeshBasicMaterial({ color: '#5eaaa6', transparent: true, opacity: .65 }), 1024); routeFlows.castShadow = false;
-  let state = null, nextState = null, currentLayer = 'city', selection = null, playing = false, speed = 1, visualAlpha = 0;
-  let appearanceKey = '', routeKey = '', frame = 0, disposed = false, lastTime = performance.now(), contextLostMessage = null;
+  let state = null, nextState = null, nextPeople = new Map(), nextShipments = new Map(), carrierShipments = new Map(), currentLayer = 'city', selection = null, playing = false, speed = 1, visualAlpha = 0;
+  let renderSample=null, tickDurationMs=500, renderDelta=1/60;
+  let routeKey = '', frame = 0, disposed = false, lastTime = performance.now(), contextLostMessage = null;
   let viewportWidth = 0, viewportHeight = 0;
   let fpsFrames = 0, fpsStart = lastTime, measuringFps = false;
+  const frameTimes=[];
   renderer.domElement.dataset.fps = '0.0';
   renderer.domElement.dataset.simulationTick = '0.000';
   function resize() {
     if (disposed) return;
     const width = Math.max(1, container.clientWidth), height = Math.max(1, container.clientHeight); camera.aspect = width / height;
-    camera.zoom = cameraMode === 'street' ? 1 : Math.min(1, camera.aspect / 1.18); camera.updateProjectionMatrix();
+    camera.zoom = cameraMode === 'street'||cameraMode==='sky' ? 1 : Math.min(1, camera.aspect / 1.18); camera.updateProjectionMatrix();
     if (width !== viewportWidth || height !== viewportHeight) { renderer.setSize(width, height, false); viewportWidth = width; viewportHeight = height; }
   }
   const observer = new ResizeObserver(resize); observer.observe(container); resize();
-  function updateAppearance() {
+  function updateAppearance(env = environmentAt(state?.tick || 0,state?.seed ?? 731)) {
     if (!state) return;
-    const night = clamp((Math.cos((state.clock ?? 48) / 144 * Math.PI * 2) + .15) * 1.2, 0, 1), stamp = `${currentLayer}:${Math.round(night * 12)}`;
-    if (stamp === appearanceKey) return; appearanceKey = stamp;
+    const day=env.sun.daylight, night=1-day;
     const effects = state.effects; bridgeBarriers.visible = Boolean(effects.bridgeClosed); hospitalExpansion.visible = Boolean(effects.hospital); parkExpansion.visible = Boolean(effects.park);
     windows.material.color.set(night > .3 ? '#ffbd78' : '#537e83');
     lamps.forEach((lamp, index) => lampMesh.setColorAt(index, color.set(effects.blackout && lamp.east ? '#263d3b' : '#ffc17a'))); lampMesh.instanceColor.needsUpdate = true;
-    hemisphere.intensity = 1.85 - night * .7; sun.intensity = 2.65 - night * 2.25; sun.color.set(night > .6 ? '#ffa273' : '#ffca91'); fill.intensity = .55 + night * .25;
-    const background = new THREE.Color('#344751').lerp(new THREE.Color('#122533'), night); scene.background.copy(background); scene.fog.color.copy(background);
-    renderer.toneMappingExposure = 1.08 + night * .17; waterMaterial.color.set(night > .5 ? '#234e57' : '#3c7773');
+    const sunDirection=new THREE.Vector3(env.sun.direction.x,env.sun.direction.y,env.sun.direction.z), moonDirection=new THREE.Vector3(env.moon.direction.x,env.moon.direction.y,env.moon.direction.z);
+    sun.position.copy(skyCenter).addScaledVector(sunDirection,140); sun.target.position.copy(skyCenter); sun.target.updateMatrixWorld();
+    sun.intensity=Math.max(0,Math.sin(env.sun.elevation))*3.1*(1-env.cloud*.6); sun.castShadow=env.sun.elevation>.025; sun.color.set(env.sun.elevation<.2?'#ffb16b':'#ffe1b6');
+    fill.position.copy(skyCenter).addScaledVector(moonDirection,95); fill.intensity=.25+night*env.moon.illumination*.38; hemisphere.intensity=.92+day*1.15-env.cloud*.22;
+    const background=new THREE.Color('#607f88').lerp(new THREE.Color('#172d3d'),night).lerp(new THREE.Color('#6c7f80'),env.cloud*.3); scene.background.copy(background); scene.fog.color.copy(background);
+    // Keep the growing city's overview readable while retaining street-level weather haze.
+    scene.fog.density=(.0038+env.precipitation*.003)*Math.min(1,100/Math.max(100,camera.position.distanceTo(controls.target)));
+    renderer.toneMappingExposure=1.13+night*.18; waterMaterial.color.set(night>.5?'#254b57':'#477d79'); waterMaterial.roughness=.3+env.rain*.3;
+    sunDisc.position.copy(camera.position).addScaledVector(sunDirection,410); sunDisc.lookAt(camera.position); sunHalo.position.copy(sunDisc.position); sunDisc.visible=sunHalo.visible=env.sun.elevation>-.02; sunHalo.material.opacity=(1-env.cloud*.85)*day;
+    sunDisc.material.color.set(env.sun.elevation<.16?'#ffc27d':'#fff0c7');
+    moonDisc.position.copy(camera.position).addScaledVector(moonDirection,405); moonDisc.lookAt(camera.position); moonDisc.visible=env.moon.elevation>-.02; moonDisc.material.opacity=(1-env.cloud*.8)*(.45+night*.55); paintMoon(env.moon.phase);
+    stars.position.copy(camera.position); stars.material.opacity=night*night*(1-env.cloud)*.75;
+    const frost=clamp((2-env.temperature)/14,0,1)*.7;
+    materials.ground.color.set('#465b45').lerp(new THREE.Color('#b9c7bc'),frost); materials.grass.color.set('#4f7653').lerp(new THREE.Color('#b5c5b5'),frost*.8); materials.roof.color.set('#566c66').lerp(new THREE.Color('#b8c9c2'),frost*.8); materials.road.roughness=.88-env.mud*.45;
+    riverWater.position.y=(env.river.level-.5)*.7-.025; riverIce.position.y=riverWater.position.y+.05; riverIce.visible=env.river.ice>.05; riverIce.material.opacity=env.river.ice*.92; rippleMesh.visible=env.river.ice<.65;
+    clouds.material.opacity=env.cloud*.4; clouds.material.color.set(day>.4?'#cad4ca':'#556d78');
   }
   function updateSelection() {
     selectionBox.visible = false; selectionRing.visible = false; let chosen = null;
@@ -309,11 +452,13 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   }
   function update(snapshot, options = {}) {
     if (disposed) return;
-    const sameSnapshot = state === snapshot;
     state = snapshot; nextState = options.nextState || snapshot; currentLayer = options.layer || 'city'; selection = options.selected || null;
     playing = Boolean(options.playing); speed = Number.isFinite(options.speed) ? options.speed : 1;
     const alpha = clamp(Number(options.alpha) || 0, 0, 1);
-    visualAlpha = sameSnapshot && alpha > 0 ? Math.max(visualAlpha, alpha) : alpha;
+    tickDurationMs=Number.isFinite(options.tickDurationMs)?Math.max(1,options.tickDurationMs):500/Math.max(.01,speed);
+    renderSample=updateRenderSample(renderSample,{tick:snapshot.tick,seed:snapshot.seed,alpha,sampledAt:options.sampledAt},performance.now());
+    nextPeople=new Map((nextState.citizens||[]).map(p=>[p.id,p])); nextShipments=new Map((nextState.shipments||[]).map(s=>[s.id,s])); carrierShipments=new Map((state.shipments||[]).map(s=>[s.carrierId,s]));
+    const living=new Set(state.citizens.map(p=>p.id)); for(const id of headings.keys()) if(!living.has(id)) headings.delete(id);
     syncArchitecture(); updateAppearance(); updateSelection(); routeFlows.count = 0;
     if (currentLayer === 'routes') {
       const segments = new Map();
@@ -329,53 +474,105 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
       routeFlows.instanceMatrix.needsUpdate = true;
     }
   }
-  let personSize = 1;
+  let personSize = 1, personGround = 0;
   function putPart(mesh, index, px, py, pz, sx, sy, sz, heading = 0, lean = 0, tint = null) {
-    position.set(px, py * personSize, pz); scale.set(sx * personSize, sy * personSize, sz * personSize); euler.set(lean, heading, 0, 'YXZ'); quaternion.setFromEuler(euler); matrix.compose(position, quaternion, scale); mesh.setMatrixAt(index, matrix); if (tint) mesh.setColorAt(index, color.set(tint));
+    position.set(px, py * personSize + personGround, pz); scale.set(sx * personSize, sy * personSize, sz * personSize); euler.set(lean, heading, 0, 'YXZ'); quaternion.setFromEuler(euler); matrix.compose(position, quaternion, scale); mesh.setMatrixAt(index, matrix); if (tint) mesh.setColorAt(index, color.set(tint));
   }
   function limb(mesh, index, px, py, pz, side, yaw, angle, arm, tint) {
     const length = arm ? .29 : .32; limbPosition.set(side * (arm ? .175 : .08), -length / 2 * Math.cos(angle), -length / 2 * Math.sin(angle));
-    personRotation.setFromAxisAngle(yAxis, yaw); limbPosition.applyQuaternion(personRotation); position.set(px + limbPosition.x * personSize, (py + limbPosition.y) * personSize, pz + limbPosition.z * personSize);
+    personRotation.setFromAxisAngle(yAxis, yaw); limbPosition.applyQuaternion(personRotation); position.set(px + limbPosition.x * personSize, (py + limbPosition.y) * personSize + personGround, pz + limbPosition.z * personSize);
     euler.set(angle, yaw, 0, 'YXZ'); limbRotation.setFromEuler(euler); scale.set((arm ? .07 : .075) * personSize, length * personSize, (arm ? .075 : .1) * personSize); matrix.compose(position, limbRotation, scale); mesh.setMatrixAt(index, matrix); mesh.setColorAt(index, color.set(tint));
   }
   function animatePeople() {
     lastPoses.clear();
-    const people = state.citizens, nextPeople = nextState?.citizens || people, count = Math.min(capacity, people.length);
+    const people = state.citizens, count = Math.min(capacity, people.length);
     for (const mesh of [npc.torso, npc.head, npc.hips, npc.hats, npc.props, npcPicks]) mesh.count = count; npc.arms.count = npc.legs.count = count * 2;
     for (let i = 0; i < count; i++) {
-      const person = people[i], next = nextPeople[i]?.id === person.id ? nextPeople[i] : person, pose = sampleNpcPose(person, next, visualAlpha, state.tick), yaw = pose.heading;
-      const { x: offsetX, z: offsetZ } = npcDisplayOffset(i % 49);
-      const px = worldX(pose.x) + offsetX, pz = worldZ(pose.z) + offsetZ, bob = pose.bodyBob || 0;
-      let tint = npcColors[i % npcColors.length]; if (currentLayer === 'wellbeing') tint = person.wellbeing < 55 ? '#d3764f' : person.wellbeing < 75 ? '#d3b05b' : '#68b7a0';
-      personSize = person.age < 12 ? .6 + person.age / 40 : 1;
-      const skin = skinColors[i % skinColors.length];
+      const person = people[i], next = nextPeople.get(person.id) || person, pose = sampleNpcPose(person, next, visualAlpha, state.tick), identity=npcVisualSeed(person.id), shipment=carrierShipments.get(person.id);
+      const previousYaw=headings.get(person.id), desiredYaw=pose.moving||person.route?.length>1?pose.heading:(previousYaw??pose.heading);
+      const yaw=previousYaw===undefined?desiredYaw:smoothHeading(previousYaw,desiredYaw,renderDelta); headings.set(person.id,yaw);
+      const { x: offsetX, z: offsetZ } = npcDisplayOffset(person.id);
+      const px = worldX(pose.x) + (shipment?.onRiver?0:offsetX), pz = worldZ(pose.z) + (shipment?.onRiver?0:offsetZ), bob = pose.bodyBob || 0;
+      let tint = npcColors[identity % npcColors.length]; if (currentLayer === 'wellbeing') tint = person.wellbeing < 55 ? '#d3764f' : person.wellbeing < 75 ? '#d3b05b' : '#68b7a0';
+      personSize = shipment?.onRiver?0:person.age < 12 ? .6 + person.age / 40 : 1; personGround=crossingHeight(px,pz);
+      const skin = skinColors[identity % skinColors.length];
       putPart(npc.torso, i, px, .64 + bob, pz, .23, .32, .16, yaw, 0, tint); putPart(npc.hips, i, px, .43 + bob, pz, .22, .12, .15, yaw, 0, '#283b3d'); putPart(npc.head, i, px, .92 + bob, pz, .105, .12, .105, yaw, 0, skin);
-      const work = pose.activity === 'working' ? -.85 + pose.workMotion * .35 : pose.activity === 'eating' ? -1.45 + pose.workMotion * .25 : pose.activity === 'socializing' ? -.3 + Math.sin(state.tick + i) * .25 : 0;
+      const work = pose.activity === 'working' ? -.85 + pose.workMotion * .35 : pose.activity === 'eating' ? -1.45 + pose.workMotion * .25 : pose.activity === 'socializing' ? -.3 + Math.sin(state.tick+visualAlpha + identity) * .25 : 0;
       for (const side of [-1, 1]) { const j = i * 2 + Number(side > 0); limb(npc.arms, j, px, .78 + bob, pz, side, yaw, work || side * pose.armSwing, true, tint); limb(npc.legs, j, px, .45 + bob, pz, side, yaw, side * pose.legSwing, false, '#27383b'); }
       const hat = /Builder|Mason|Craftsperson/.test(person.role); putPart(npc.hats, i, px, hat ? 1.01 + bob : .95, pz, hat ? .12 : 0, hat ? .055 : 0, hat ? .12 : 0, yaw, 0, '#d5a557');
-      const carries = pose.activity === 'working' || pose.activity === 'eating', propX = px + Math.sin(yaw) * .23, propZ = pz + Math.cos(yaw) * .23;
-      putPart(npc.props, i, propX, .66 + bob + (pose.workMotion || 0) * .025, propZ, carries ? .2 : 0, carries ? .055 : 0, carries ? .13 : 0, yaw, -.12, pose.activity === 'eating' ? '#d9b982' : '#648a89');
-      putPart(npcPicks, i, px, .59, pz, .18, .55, .18); lastPoses.set(person.id, { x: px, z: pz, heading: yaw });
-      if (selection?.kind === 'citizen' && selection.id === person.id) selectionRing.position.set(px, .22, pz);
+      const loaded=Boolean(person.cargo?.amount>0&&person.mode!=='cart'&&!shipment?.onRiver), carries = loaded||pose.activity === 'working' || pose.activity === 'eating', propX = px + Math.sin(yaw) * .23, propZ = pz + Math.cos(yaw) * .23;
+      putPart(npc.props, i, propX, .66 + bob + (pose.workMotion || 0) * .025, propZ, carries ? (loaded ? .3 : .2) : 0, carries ? (loaded ? .25 : .055) : 0, carries ? (loaded ? .3 : .13) : 0, yaw, -.12, loaded?'#b28b55':pose.activity === 'eating' ? '#d9b982' : '#648a89');
+      if(shipment?.onRiver) { personSize=1; personGround=0; putPart(npcPicks,i,px,.65,pz,1,.7,2.7,yaw); }
+      else putPart(npcPicks, i, px, .59, pz, .18, .55, .18);
+      lastPoses.set(person.id, { x: px, z: pz, heading: yaw, ground:personGround });
+      if (selection?.kind === 'citizen' && selection.id === person.id) selectionRing.position.set(px, .22+personGround, pz);
     }
     for (const mesh of [...Object.values(npc), npcPicks]) { mesh.instanceMatrix.needsUpdate = true; if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true; }
     if (followId && !people.some(p => p.id === followId)) { followId = null; onFollowChange?.(null); }
     const followed = followId && lastPoses.get(followId);
     if (followed) positionFollowCamera(followed);
   }
-  function positionFollowCamera(pose) {
-    controls.target.set(pose.x, .65, pose.z);
-    camera.position.set(pose.x + Math.sin(pose.heading) * 6.2, 3.15, pose.z + Math.cos(pose.heading) * 6.2);
+  function positionFollowCamera(pose, snap=false) {
+    const amount=snap||reducedMotion?1:1-Math.exp(-renderDelta*9), ground=pose.ground||0;
+    controls.target.lerp(new THREE.Vector3(pose.x,.65+ground,pose.z),amount);
+    camera.position.lerp(new THREE.Vector3(pose.x + Math.sin(pose.heading) * 6.2,3.15+ground,pose.z + Math.cos(pose.heading) * 6.2),amount);
+  }
+  function animateCargo() {
+    for(const mesh of [carts,cartWheels,barges,bargeRims,freight,dockHooks,dockLoads]) mesh.count=0;
+    function put(mesh,x,y,z,sx,sy,sz,tint,yaw=0) {
+      if(mesh.count>=mesh.instanceMatrix.count) return;
+      position.set(x,y,z);scale.set(sx,sy,sz);quaternion.setFromAxisAngle(yAxis,yaw);matrix.compose(position,quaternion,scale);mesh.setMatrixAt(mesh.count,matrix);
+      if(tint)mesh.setColorAt(mesh.count,color.set(tint));mesh.count++;
+    }
+    const riverY=riverWater.position.y;
+    for(const shipment of state.shipments||[]) {
+      const next=nextShipments.get(shipment.id), pose=lastPoses.get(shipment.carrierId);
+      if(shipment.mode==='barge'&&shipment.onRiver) {
+        const x=worldX(shipment.x+(next?.onRiver?(next.x-shipment.x)*visualAlpha:0)), z=worldZ(shipment.z+(next?.onRiver?(next.z-shipment.z)*visualAlpha:0));
+        const yaw=next?.onRiver&&Math.hypot(next.x-shipment.x,next.z-shipment.z)>.00001?Math.atan2(next.x-shipment.x,next.z-shipment.z):(pose?.heading||0);
+        put(barges,x,riverY+.32,z,2.15,.42,5.1,'#795b3e',yaw);
+        for(const side of [-1,1]) {
+          put(bargeRims,x+Math.cos(yaw)*side,riverY+.68,z-Math.sin(yaw)*side,.14,.4,5.2,'#a68357',yaw);
+          put(bargeRims,x+Math.sin(yaw)*side*2.5,riverY+.67,z+Math.cos(yaw)*side*2.5,2.1,.4,.16,'#9d784f',yaw);
+        }
+        const crateCount=shipment.loaded?Math.min(6,Math.max(1,Math.ceil(shipment.amount/4))):0;
+        for(let c=0;c<crateCount;c++) {
+          const localX=(c%2-.5)*.75,localZ=(Math.floor(c/2)-1)*1.1;
+          put(freight,x+localX*Math.cos(yaw)+localZ*Math.sin(yaw),riverY+.9,z-localX*Math.sin(yaw)+localZ*Math.cos(yaw),.65,.6,.8,shipment.resource==='stone'?'#969d91':'#bb965e',yaw);
+        }
+      } else if(shipment.mode==='cart'&&pose) {
+        const yaw=pose.heading,x=pose.x-Math.sin(yaw)*.75,z=pose.z-Math.cos(yaw)*.75,y=pose.ground||0;
+        put(carts,x,y+.55,z,.8,.2,1.05,'#a17c51',yaw);
+        for(const side of [-1,1]) for(const end of [-1,1]) put(cartWheels,x+Math.cos(yaw)*side*.47+Math.sin(yaw)*end*.36,y+.32,z-Math.sin(yaw)*side*.47+Math.cos(yaw)*end*.36,.11,.29,.29,null,yaw);
+        if(shipment.loaded) put(freight,x,y+.88,z,.7,.45,.8,shipment.resource==='stone'?'#9d9f90':'#bf995d',yaw);
+      }
+    }
+    for(const dock of state.docks||[]) {
+      const b=state.buildings.find(place=>place.id===dock.buildingId);if(!b)continue;
+      const active=(state.shipments||[]).find(s=>['loading','unloading'].includes(s.state)&&(s.sourceId===b.id||s.destinationId===b.id));
+      const x=worldX(b.x),z=worldZ(b.z),side=b.entrance.x<5?1:-1,drop=active?2.2+Math.sin((state.tick+visualAlpha)*1.6)*.65:1.2;
+      put(dockHooks,x+side*1.2,4.1-drop/2,z,.035,drop,.035,null);
+      if(active?.loaded)put(dockLoads,x+side*1.2,4.1-drop-.2,z,.5,.45,.55,'#b58e58');
+    }
+    for(const mesh of [carts,cartWheels,barges,bargeRims,freight,dockHooks,dockLoads]) {mesh.instanceMatrix.needsUpdate=true;if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;}
   }
   function animateEnvironment(tick) {
     const t = reducedMotion ? 0 : tick;
+    const env=environmentAt(tick,state.seed??731); updateAppearance(env);
+    precipitation.visible=!reducedMotion&&env.precipitation>.06; precipitation.material.size=env.snow>.2 ? .18 : .08;precipitation.material.opacity=env.precipitation*.65;
+    if(precipitation.visible) {
+      const fall=env.snow>.2 ? .35 : 3;
+      for(let i=0;i<360;i++) {weatherPositions[i*3]=camera.position.x+(seeded(i+91)-.5)*85+Math.sin(t*.01+i)*env.wind.speed*.15;weatherPositions[i*3+1]=((seeded(i+120)*42-t*fall)%42+42)%42;weatherPositions[i*3+2]=camera.position.z+(seeded(i+150)-.5)*85;}
+      weatherGeometry.attributes.position.needsUpdate=true;
+    }
+    cloudEntries.forEach((entry,i)=>{position.set(((entry.x+Math.cos(env.wind.direction)*t*.025+200)%400+400)%400-200,entry.y,((entry.z+Math.sin(env.wind.direction)*t*.025+200)%400+400)%400-200);scale.set(entry.sx,entry.sy,entry.sz);matrix.compose(position,quaternion.identity(),scale);clouds.setMatrixAt(i,matrix);});clouds.instanceMatrix.needsUpdate=true;
     ripples.forEach((ripple, i) => {
       position.set(ripple.x + Math.sin(t * .03 + i) * .06, ripple.y, ((ripple.z + t * .15 + 80) % 160) - 80); scale.set(ripple.sx, ripple.sy, ripple.sz); matrix.compose(position, quaternion.identity(), scale); rippleMesh.setMatrixAt(i, matrix);
     }); rippleMesh.instanceMatrix.needsUpdate = true;
     treeEntries.forEach((entry, i) => {
       position.set(entry.x + Math.sin(t * .08 + i) * .035, entry.y, entry.z + Math.cos(t * .06 + i) * .025); scale.set(entry.sx, entry.sy, entry.sz); quaternion.setFromAxisAngle(yAxis, Math.sin(t * .015 + i) * .04); matrix.compose(position, quaternion, scale); trees.setMatrixAt(i, matrix);
       // Cut away foreground foliage so the street camera can see its subject.
-      if (cameraMode === 'street' && camera.position.y < 8 && blocksStreetView(entry, camera.position, controls.target)) { scale.setScalar(0); matrix.compose(position, quaternion, scale); trees.setMatrixAt(i, matrix); }
+      if (clearedTrees.has(i) || cameraMode === 'street' && camera.position.y < 8 && blocksStreetView(entry, camera.position, controls.target)) { scale.setScalar(0); matrix.compose(position, quaternion, scale); trees.setMatrixAt(i, matrix); }
     }); trees.instanceMatrix.needsUpdate = true;
     pools.count = 0;
     lamps.forEach(lamp => {
@@ -391,20 +588,25 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   }
   function animate(time) {
     if (disposed) return; frame = requestAnimationFrame(animate);
-    const delta = clamp((time - lastTime) / 1000, 0, .12); lastTime = time;
+    const elapsedMs=Math.max(0,time-lastTime),delta = clamp(elapsedMs / 1000, 0, .12); lastTime = time; renderDelta=delta;
     if (document.hidden || contextLostMessage || !container.clientWidth || !container.clientHeight) {
-      fpsFrames = 0; measuringFps = false;
+      fpsFrames = 0; measuringFps = false;frameTimes.length=0;
       return;
     }
-    if (!measuringFps) { fpsStart = time; fpsFrames = 0; measuringFps = true; }
-    if (playing) visualAlpha = clamp(visualAlpha + delta * speed * 2, 0, 1);
-    if (state) { const tick = state.tick + visualAlpha; animatePeople(); animateEnvironment(tick); }
+    if (measuringFps) {frameTimes.push(elapsedMs);if(frameTimes.length>240)frameTimes.shift();}
+    else { fpsStart = time; fpsFrames = 0; measuringFps = true; }
+    visualAlpha=renderFraction(renderSample?.sampledAt??time,renderSample?.alpha??0,time,tickDurationMs,playing);
+    if (state) { const tick = state.tick + visualAlpha; animatePeople(); animateCargo(); animateEnvironment(tick); }
     if (cinematic && interactive && !reducedMotion) { const offset = camera.position.clone().sub(controls.target); offset.applyAxisAngle(yAxis, delta * .025); camera.position.copy(controls.target).add(offset); }
-    controls.update(); renderer.render(scene, camera);
+    controls.update(); if(cameraMode==='sky')camera.position.y=Math.max(1.2,camera.position.y); renderer.render(scene, camera);
     fpsFrames++;
     if (time - fpsStart >= 1000) {
       renderer.domElement.dataset.fps = (fpsFrames * 1000 / (time - fpsStart)).toFixed(1);
       renderer.domElement.dataset.simulationTick = ((state?.tick || 0) + visualAlpha).toFixed(3);
+      const sorted=[...frameTimes].sort((a,b)=>a-b);
+      renderer.domElement.dataset.frameP95Ms=(sorted[Math.floor((sorted.length-1)*.95)]||0).toFixed(2);
+      renderer.domElement.dataset.frameP99Ms=(sorted[Math.floor((sorted.length-1)*.99)]||0).toFixed(2);
+      renderer.domElement.dataset.slowFrames=String(frameTimes.filter(ms=>ms>50).length);
       fpsFrames = 0; fpsStart = time;
     }
   }
@@ -433,7 +635,7 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   renderer.domElement.addEventListener('pointerdown', down); renderer.domElement.addEventListener('pointerup', up); renderer.domElement.addEventListener('pointercancel', cancel); renderer.domElement.addEventListener('webglcontextlost', contextLost);
 
   function resetView() {
-    cameraMode = 'orbit'; if (followId) onFollowChange?.(null); followId = null;
+    cameraMode = 'orbit'; cameraBounds('orbit'); if (followId) onFollowChange?.(null); followId = null;
     const places = state?.buildings || [];
     const cx = places.length ? places.reduce((s, b) => s + worldX(b.x), 0) / places.length : 0;
     const cz = places.length ? places.reduce((s, b) => s + worldZ(b.z), 0) / places.length : 0;
@@ -444,16 +646,27 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   function setView(view) {
     if (disposed || !view || ![view.position, view.target].every(values => Array.isArray(values) && values.length === 3 && values.every(Number.isFinite))) return;
     applyingView = true;
-    try { cameraMode = ['orbit', 'street', 'top'].includes(view.mode) ? view.mode : 'orbit'; camera.position.fromArray(view.position); controls.target.fromArray(view.target); resize(); controls.update(); }
+    try { cameraMode = ['orbit', 'street', 'top','sky'].includes(view.mode) ? view.mode : 'orbit'; cameraBounds(cameraMode); camera.position.fromArray(view.position); controls.target.fromArray(view.target); resize(); controls.update(); }
     finally { applyingView = false; }
   }
   function focus(point) {
     if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.z)) return;
     const target = new THREE.Vector3(worldX(point.x) + .7, .7, worldZ(point.z) + .7), offset = camera.position.clone().sub(controls.target);
+    if(cameraMode==='sky')offset.set(17,12,19);
     offset.setLength(cameraMode === 'street' ? 6.5 : Math.min(29, offset.length())); controls.target.copy(target); camera.position.copy(target).add(offset); controls.update();
   }
   function setCameraMode(mode) {
-    if (!['orbit', 'street', 'top'].includes(mode)) return; cameraMode = mode; cinematic = false;
+    if (!['orbit', 'street', 'top','sky'].includes(mode)) return; cameraMode = mode; cameraBounds(mode); cinematic = false;
+    if(mode==='sky') {
+      if(followId)onFollowChange?.(null);followId=null;
+      const env=environmentAt((state?.tick||0)+visualAlpha,state?.seed??731);
+      const body=env.sun.elevation>0?env.sun:env.moon.elevation>0?env.moon:null;
+      const direction=body?new THREE.Vector3(body.direction.x,body.direction.y,body.direction.z):new THREE.Vector3(.3,.25,-.9).normalize();
+      const horizontal=new THREE.Vector3(direction.x,0,direction.z).normalize();
+      const radius=Math.max(30,...(state?.buildings||[]).map(b=>Math.hypot(worldX(b.x)-skyCenter.x,worldZ(b.z)-skyCenter.z)))+16;
+      camera.position.copy(skyCenter).addScaledVector(horizontal,-radius);camera.position.y=3.2;
+      controls.target.copy(camera.position).addScaledVector(direction,80);resize();controls.update();return;
+    }
     const person = selection?.kind === 'citizen' && state?.citizens.find(p => p.id === selection.id);
     const building = selection?.kind === 'building' && state?.buildings.find(b => b.id === selection.id);
     const point = person || building?.entrance;
@@ -466,9 +679,9 @@ export function createCity(container, { onSelect, onViewChange, onFollowChange, 
   function setFollow(id) {
     followId = typeof id === 'string' && state?.citizens.some(p => p.id === id) ? id : null; cinematic = false;
     if (followId) {
-      const index = state.citizens.findIndex(p => p.id === followId), person = state.citizens[index], offset = npcDisplayOffset(index % 49);
-      const pose = sampleNpcPose(person, nextState?.citizens[index], visualAlpha, state.tick);
-      cameraMode = 'street'; positionFollowCamera({ x: worldX(pose.x) + offset.x, z: worldZ(pose.z) + offset.z, heading: pose.heading }); resize(); controls.update();
+      const person = state.citizens.find(p => p.id === followId), offset = npcDisplayOffset(person.id);
+      const pose = sampleNpcPose(person, nextPeople.get(person.id), visualAlpha, state.tick),x=worldX(pose.x)+offset.x,z=worldZ(pose.z)+offset.z;
+      cameraMode = 'street'; cameraBounds('street'); positionFollowCamera({ x,z, heading:pose.heading,ground:crossingHeight(x,z) },true); resize(); controls.update();
     }
     onFollowChange?.(followId);
   }
