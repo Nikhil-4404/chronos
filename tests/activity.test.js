@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { sampleNpcPose, npcDisplayOffset, npcVisualSeed, blocksStreetView, renderFraction, updateRenderSample, smoothHeading, crossingHeight } from '../src/activity.js';
+import { sampleNpcPose, npcDisplayOffset, npcVisualSeed, blocksStreetView, renderFraction, updateRenderSample, smoothHeading, crossingHeight, npcGroundHeight, riverCrew } from '../src/activity.js';
 import { createTimeline, getState } from '../src/simulation.js';
 
 test('resident appearance and street placement survive removal and reordering of other people', () => {
@@ -52,14 +52,38 @@ test('facing turns take the short arc and gait stays continuous at snapshot boun
 });
 
 test('raised river crossings have continuous ramps and leave ordinary streets on the ground', () => {
-  assert.equal(crossingHeight(0,-16),2.1);assert.equal(crossingHeight(8,16),2.1);
-  assert.equal(crossingHeight(10,-16),1.05);assert.equal(crossingHeight(12,-16),0);
+  assert.equal(crossingHeight(0,-16),2.445);assert.equal(crossingHeight(8.3,16),2.445);
+  assert.ok(Math.abs(crossingHeight(11.3,-16)-1.2875)<1e-10);assert.equal(crossingHeight(13.3,-16),0);
   assert.equal(crossingHeight(0,0),0);
+  for(const size of [.6,1])for(const x of [0,8.3,11.3])assert.ok(Math.abs(npcGroundHeight(crossingHeight(x,-16),size)+.13*size-crossingHeight(x,-16))<1e-10,'feet meet the modeled deck and ramp surface at every scale');
+  assert.ok(Math.abs(crossingHeight(-8,-19.6)-1.2875)<1e-10,'bank-side walkers use the actual side access ramp');
+  assert.ok(Math.abs(crossingHeight(-8,-17.6)-2.445)<1e-10,'bank ramp meets the deck continuously');
+});
+
+test('boarding forecasts hide walkers before a sailing pose enters the river, including rescue craft',()=>{
+  const loading={id:'resident-1',mode:'barge',job:{kind:'haul',stage:'load'}},sailing={...loading,job:{kind:'haul',stage:'river'}};
+  assert.equal(riverCrew(loading,sailing,0),false);
+  assert.equal(riverCrew(loading,sailing,.1),true);
+  assert.equal(riverCrew(sailing,{...loading,job:{kind:'haul',stage:'unload'}},1),true,'disembarkation waits for the authoritative onshore snapshot');
+  const walking={...loading,job:{kind:'haul',stage:'recover'}},rescue={...loading,job:{kind:'haul',stage:'recover-river'}};
+  assert.equal(riverCrew(walking,walking,.8),false,'a stranded load in the river does not put its approaching worker aboard');
+  assert.equal(riverCrew(walking,rescue,.1),true);
+  assert.equal(riverCrew(rescue,rescue,.5),true);
+  assert.equal(riverCrew(loading,{...sailing,id:'resident-2'},.5),false);
+});
+
+test('remaining snapshot routes with inherited route indexes stay on bridge corners',()=>{
+  const p={id:'resident-3',x:4.35,z:1.99,status:'Walking',routeIndex:5,route:[{x:4.35,z:1.99},{x:4.35,z:2},{x:6,z:2}]},next={...p,x:4.4,z:2};
+  for(let i=0;i<=20;i++) {
+    const pose=sampleNpcPose(p,next,i/20,1);
+    assert.ok(pose.x>=4.35&&pose.x<=4.4&&pose.z>=1.99&&pose.z<=2);
+    if(pose.x>4.39375)assert.equal(pose.z,2,'the visible channel crossing stays over the bridge');
+  }
 });
 
 test('colony occupations, meals, socializing and journeys choose their actual activity poses', () => {
   const p = { id: 'resident-18', x: 2, z: 4 };
-  for (const status of ['Building', 'Retrofitting a building', 'Salvaging materials', 'Loading cargo', 'Unloading cargo', 'Growing food', 'Gathering timber', 'Quarrying stone', 'Crafting tools', 'Hauling materials', 'Caring for neighbors']) {
+  for (const status of ['Building', 'Retrofitting a building', 'Salvaging materials', 'Loading cargo', 'Unloading cargo', 'Growing food', 'Gathering timber', 'Quarrying stone', 'Crafting tools', 'Hauling materials', 'Caring for neighbors','Teaching children','Sharing knowledge','Trading at market','Milling provisions','Managing food stores','Inspecting building safety','Supplying clean water','Welcoming neighbors']) {
     assert.equal(sampleNpcPose({ ...p, status }, p, 0, 10).activity, 'working');
   }
   assert.equal(sampleNpcPose({ ...p, status: 'Having lunch' }, p).activity, 'eating');

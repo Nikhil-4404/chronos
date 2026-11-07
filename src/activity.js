@@ -34,8 +34,17 @@ export function smoothHeading(previous, desired, deltaSeconds, response = 12) {
 }
 
 export function crossingHeight(x, z) {
-  if (Math.min(Math.abs(z + 16), Math.abs(z - 16)) > 1.35) return 0;
-  return 2.1 * Math.max(0, Math.min(1, (12 - Math.abs(x)) / 4));
+  const distance = Math.min(Math.abs(z + 16), Math.abs(z - 16));
+  if(distance<=1.6&&Math.abs(x)<13.3)return .13+2.315*Math.max(0,Math.min(1,(13.3-Math.abs(x))/4));
+  if(Math.abs(Math.abs(x)-8)<1.35&&distance<5.6)return .13+2.315*(5.6-distance)/4;
+  return 0;
+}
+
+export function npcGroundHeight(surface, size = 1) { return surface - .13 * size; }
+
+export function riverCrew(person, nextPerson, alpha = 0) {
+  const aboard = p => p?.mode === 'barge' && ['river', 'recover-river'].includes(p.job?.stage);
+  return aboard(person) || alpha > 0 && (!person?.id || person.id === nextPerson?.id) && aboard(nextPerson);
 }
 
 function routePosition(person, nextX, nextZ, fraction) {
@@ -87,7 +96,7 @@ export function sampleNpcPose(person, nextPerson, alpha = 0, tick = 0) {
   const distance = sampled.distance;
   const status = (fraction === 1 ? nextPerson?.status : person?.status) || person?.status || '';
   const moving = distance > 0.000001 && traveling.test(fraction === 1 ? status : `${status} ${nextPerson?.status || ''}`);
-  const activity = moving ? 'walking' : /interrupted/i.test(status) ? 'interrupted' : /lunch/i.test(status) ? 'eating' : /At work|Building|Retrofitting|Salvaging|Gathering|Quarrying|Crafting|Growing|Hauling|Loading|Unloading|Stocking|Maintaining|Caring/i.test(status) ? 'working' : /Socializing|Playing/.test(status) ? 'socializing' : 'resting';
+  const activity = moving ? 'walking' : /interrupted/i.test(status) ? 'interrupted' : /lunch/i.test(status) ? 'eating' : /At work|Building|Retrofitting|Salvaging|Gathering|Quarrying|Crafting|Growing|Hauling|Loading|Unloading|Stocking|Maintaining|Caring|Teaching|Sharing|Trading|Milling|Managing|Inspecting|Supplying|Welcoming/i.test(status) ? 'working' : /Socializing|Playing/.test(status) ? 'socializing' : 'resting';
   const target = person?.route?.[1];
   const directionX = distance > 0.000001 ? sampled.dx : finite(target?.x, x) - x;
   const directionZ = distance > 0.000001 ? sampled.dz : finite(target?.z, z) - z;

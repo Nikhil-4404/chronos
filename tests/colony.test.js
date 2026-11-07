@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createColony, stepColony, snapshotColony, serializeColony, deserializeColony, resourceBalance, elapsedTicks, housing, LIMITS, TICKS_PER_DAY, PLOTS, KINDS } from '../src/colony.js';
 import { environmentAt } from '../src/environment.js';
 import { createColony as createV2, stepColony as stepV2, serializeColony as serializeV2 } from '../src/colony-v2.js';
+import { createColony as createV3, stepColony as stepV3, serializeColony as serializeV3 } from '../src/colony-v3.js';
 
 const stocks = ['food', 'wood', 'stone', 'tools'];
 function balanced(w) {
@@ -19,7 +20,7 @@ function payForProject(w, b, type, targetKind = b.kind) {
   for (const r of stocks) w.resources[r] = w.buildings.reduce((n, b) => n + b.inventory[r], 0);
 }
 let grown;
-test('growth keeps developing beyond the reproduced day-90 stall with real additions and shipping', () => {
+test('growth keeps developing beyond the reproduced day-90 stall with real additions and shipping', t => {
   const w = createColony(731, 0); let at60;
   for (let day = 1; day <= 120; day++) {
     stepColony(w, TICKS_PER_DAY);
@@ -30,10 +31,17 @@ test('growth keeps developing beyond the reproduced day-90 stall with real addit
   assert.ok(w.people.length > at60.population + 200);
   assert.ok(w.buildings.length > at60.places + 30);
   assert.ok(w.totals.completed > at60.finished + 30);
-  assert.ok(w.totals.upgrades > 100 && w.totals.deliveries > 1000);
+  assert.ok(w.totals.upgrades >= 10 && w.buildings.some(b => b.additions.includes('upper-floor')), 'real additions complete alongside outward development');
+  assert.ok(w.totals.deliveries > 1000, 'growth is supplied by actual completed cargo journeys');
   assert.ok(w.learning['crossing:barge']?.samples > 0);
+  const scene = snapshotColony(w);
+  assert.ok(scene.development.footprint.area > 300, 'the occupied city bounds must spread beyond the old compact settlement');
+  assert.equal(scene.development.serviceCoverage, 1, 'all nine civic functions emerge through construction');
+  assert.ok(w.cityLearning.observations > 10, 'finished development yields real delayed learning observations');
+  assert.ok(scene.development.districtDetails.filter(d => d.places > 5).length >= 5);
   assert.ok(w.people.length <= LIMITS.people && w.buildings.length <= LIMITS.buildings);
   assert.ok(serializeColony(w, 0).length < 2 * 1024 * 1024);
+  t.diagnostic(JSON.stringify({ population: w.people.length, places: w.buildings.length, additions: w.totals.upgrades, deliveries: w.totals.deliveries, footprint: scene.development.footprint.area }));
   grown = structuredClone(w);
 });
 test('a shipment reserves, physically picks up and unloads goods without manufacturing material', () => {
@@ -115,7 +123,7 @@ test('schema-2 worlds validate before migration and previously paid site stock i
   const old = createV2(731, 0); stepV2(old, 144 * 90);
   const raw = serializeV2(old, 0), original = structuredClone(old);
   const loaded = deserializeColony(raw);
-  assert.equal(loaded.schema, 3); assert.equal(loaded.tick, old.tick);
+  assert.equal(loaded.schema, 4); assert.equal(loaded.tick, old.tick);
   assert.deepEqual(loaded.people.map(p => p.id), old.people.map(p => p.id));
   assert.deepEqual(loaded.people.map(p => p.name), old.people.map(p => p.name));
   for (const b of old.buildings.filter(b => b.progress < 1)) {
@@ -131,6 +139,67 @@ test('schema-2 worlds validate before migration and previously paid site stock i
   const bad = JSON.parse(raw); bad.people[0].homeId = 'missing';
   assert.throws(() => deserializeColony(JSON.stringify(bad)));
 });
+test('schema-3 migration preserves every old plot and rejects corruption before adding the city policy', () => {
+  const original = createV3(731, 0); stepV3(original, 144 * 100);
+  const saved = serializeV3(original, 0), w = deserializeColony(saved);
+  assert.equal(w.schema, 4); assert.equal(w.cityLearning.observations, 0);
+  assert.deepEqual(w.buildings, original.buildings); assert.deepEqual(w.people, original.people);
+  const before = snapshotColony(w).development.footprint.area, count = w.buildings.length;
+  stepColony(w, 144 * 20);
+  assert.ok(w.buildings.length > count + 10, 'mature worlds add new land despite existing spare beds');
+  assert.ok(snapshotColony(w).development.footprint.area > before, 'mature worlds physically spread');
+  for (const building of original.buildings) assert.deepEqual([w.buildings.find(b => b.id === building.id).x, w.buildings.find(b => b.id === building.id).z], [building.x, building.z]);
+  assert.ok(w.cityLearning.observations > 0); balanced(w); assert.doesNotThrow(() => serializeColony(w, 0));
+  const bad = JSON.parse(saved); bad.people[0].homeId = 'missing'; assert.throws(() => deserializeColony(JSON.stringify(bad)));
+  const duplicate = structuredClone(w); Object.assign(duplicate.buildings.at(-1), { plotId: duplicate.buildings[0].plotId, x: duplicate.buildings[0].x, z: duplicate.buildings[0].z, entrance: { ...duplicate.buildings[0].entrance } });
+  assert.throws(() => deserializeColony(JSON.stringify(duplicate)), /one plot/);
+});
+
+test('city policy persistence and nested snapshot decisions preserve deterministic continuation', () => {
+  const w = grown ? structuredClone(grown) : createColony(731, 0); if (!grown) stepColony(w, 144 * 30);
+  const roundtrip = deserializeColony(serializeColony(w, 0));
+  stepColony(w, 144); stepColony(roundtrip, 144); assert.deepEqual(w, roundtrip);
+  const before = serializeColony(w, 0), snapshot = snapshotColony(w);
+  snapshot.learning.city.recent[0].reason = 'changed'; snapshot.development.districtDetails[0].center.x = 999;
+  assert.equal(serializeColony(w, 0), before);
+  const bad = structuredClone(w); bad.cityLearning.estimates['alien:outward'] = { samples: 1, value: 0, meanReward: 0 };
+  assert.throws(() => deserializeColony(JSON.stringify(bad)), /learning context/);
+});
+
+test('staffed school and waterworks have modeled effects on people rather than only new silhouettes', () => {
+  const w = createColony(731, 0), school = w.buildings.find(b => b.kind === 'park'), water = w.buildings.find(b => b.kind === 'quarry');
+  school.kind = school.originalKind = 'school'; water.kind = water.originalKind = 'waterworks';
+  const [teacher, child, keeper] = w.people; child.age = 5;
+  Object.assign(teacher, { role: 'Teacher', workId: school.id, x: school.entrance.x, z: school.entrance.z, destinationId: school.id, route: [], routeIndex: 0, hunger: 0, social: 10 });
+  Object.assign(child, { x: school.entrance.x, z: school.entrance.z, destinationId: school.id, route: [], routeIndex: 0, hunger: 0, social: 10 });
+  Object.assign(keeper, { role: 'Waterkeeper', workId: water.id, x: water.entrance.x, z: water.entrance.z, destinationId: water.id, route: [], routeIndex: 0, hunger: 0, health: 50 });
+  w.tick = 60; stepColony(w, 12);
+  assert.ok(child.social > 10); assert.ok(keeper.health > 50 + .045 * 12);
+  const schools = snapshotColony(w).buildings.find(b => b.id === school.id); assert.ok(schools.service && schools.staffed > 0);
+});
+
+test('outer neighborhoods receive complete households through shorter real commutes without teleporting people', () => {
+  const w = createColony(731, 0), [p, partner, child] = w.people, oldHome = w.buildings.find(b => b.id === p.homeId);
+  w.people = [p, partner, child]; p.partnerId = partner.id; partner.partnerId = p.id; partner.homeId = child.homeId = oldHome.id;
+  child.age = 5; child.parentIds = [p.id, partner.id]; child.partnerId = null;
+  for (const other of [p, partner]) other.parentIds = [];
+  const plots = PLOTS.filter(plot => plot.x >= 11 && plot.z >= 10);
+  for (const [i, kind] of ['home', 'workshop'].entries()) {
+    const plot = plots[i], prototype = w.buildings.find(b => b.kind === kind);
+    w.buildings.push({ ...structuredClone(prototype), id: `place-${w.buildings.length + 1}`, plotId: plot.id, x: plot.x + .5, z: plot.z + .5, entrance: { x: plot.x, z: plot.z },
+      kind, originalKind: kind, capacity: kind === 'home' ? 9 : 0, project: null, progress: 1, delivered: 1, completed: 0, materials: { wood: KINDS[kind].wood, stone: KINDS[kind].stone }, inventory: { food: 0, wood: 10, stone: 0, tools: 0 } });
+  }
+  const home = w.buildings.at(-2), work = w.buildings.at(-1), destination = w.buildings.find(b => b.kind === 'dock');
+  loadedFixture(w, p, 1, work, destination, 'porter', true); w.tick = 143;
+  for (const r of stocks) w.resources[r] = w.buildings.reduce((n, b) => n + b.inventory[r], 0);
+  w.economy.initial = resourceBalance(w).held;
+  const originalPosition = { x: p.x, z: p.z }; assert.doesNotThrow(() => serializeColony(w, 0)); stepColony(w);
+  assert.ok([p, partner, child].every(person => person.homeId === home.id));
+  assert.ok(Math.hypot(p.x - originalPosition.x, p.z - originalPosition.z) < 1, 'moving home changes the destination, not the body position');
+  assert.equal(p.job.shipmentId, 'shipment-1'); assert.equal(p.cargo.amount, 3);
+  balanced(w); assert.doesNotThrow(() => serializeColony(w, 0));
+});
+
 test('retrofitting adds rooms without replacing the building identity', () => {
   const w = createColony(731, 0), b = w.buildings[0], id = b.id, capacity = b.capacity, origin = b.originalKind;
   payForProject(w, b, 'expand'); stepColony(w, 144);
@@ -153,7 +222,10 @@ test('reuse retains the old shell and salvage transfers recoverable stock with m
   assert.equal(salvage.totals.salvaged, 1); balanced(salvage);
 });
 test('learned dispatch, in-flight cargo and state continue exactly after save/import', () => {
-  const original = grown || createColony(731, 0);
+  const original = createColony(731, 0);
+  for (let tick = 0; tick < 2000 && (!Object.keys(original.learning).length || !original.shipments.some(s => s.loaded)); tick++) stepColony(original);
+  assert.ok(original.totals.deliveries > 0 && Object.keys(original.learning).length > 0, 'the fixture learns from an actual completed delivery');
+  assert.ok(original.shipments.some(s => s.loaded), 'the saved fixture also contains real in-flight cargo');
   const loaded = deserializeColony(serializeColony(original, 0)), a = structuredClone(original);
   stepColony(a, 30); stepColony(loaded, 30);
   assert.deepEqual(loaded, a);
@@ -246,15 +318,31 @@ test('stranded river cargo stays put until recovery and resumes a legal barge ro
   assert.doesNotThrow(() => serializeColony(w, 0)); stepColony(w, 4);
   assert.equal(s.carrierId, null, 'a frozen barge is not dispatched as a land load');
   w.tick = 232 * 144 + 40;
+  let recoveryBoat = false;
   for (let i = 0; i < 80 && p.job?.stage !== 'river'; i++) {
     stepColony(w);
-    if (p.job?.stage === 'recover') assert.deepEqual({ x: s.x, z: s.z, onRiver: s.onRiver }, { x: 5, z: 4, onRiver: true });
+    if (['recover', 'recover-river'].includes(p.job?.stage)) assert.deepEqual({ x: s.x, z: s.z, onRiver: s.onRiver }, { x: 5, z: 4, onRiver: true });
+    if (p.job?.stage === 'recover') assert.ok(p.x <= 4 || p.x >= 6 || p.z === 2 || p.z === 6, 'a rescuer walks only on land or a bridge before boarding');
+    if (p.job?.stage === 'recover-river') recoveryBoat = true;
   }
+  assert.ok(recoveryBoat, 'floating cargo is approached in an explicit recovery craft');
   assert.equal(p.job?.stage, 'river'); assert.equal(s.mode, 'barge'); assert.equal(p.cargo.amount, 30);
   assert.deepEqual(p.route.at(-1), destination.entrance);
   assert.ok(p.route.slice(0, -1).every(point => point.x === 5), 'recovery discards its approach route and follows the channel');
   for (let i = 0; i < 80 && w.shipments.includes(s); i++) stepColony(w);
   assert.ok(!w.shipments.includes(s)); assert.equal(destination.inventory.wood, 30);
+  balanced(w); assert.doesNotThrow(() => serializeColony(w, 0));
+});
+
+test('a legacy rescuer already mid-channel resumes in a recovery craft without moving abandoned cargo', () => {
+  const w = createColony(731, 0); w.tick = 232 * 144 + 40;
+  const [source, destination] = w.buildings.filter(b => b.kind === 'dock'), p = w.people[0];
+  loadedFixture(w, p, 1, source, destination, 'barge', true, 30);
+  const s = w.shipments[0]; Object.assign(s, { state: 'stranded', x: 5, z: 4, onRiver: true });
+  Object.assign(p, { x: 5, z: 3, cargo: null, partnerId: null, hunger: 0, job: { kind: 'haul', shipmentId: s.id, stage: 'recover', elapsed: 0 }, route: [], routeIndex: 0 }); w.people = [p];
+  assert.doesNotThrow(() => serializeColony(w, 0)); stepColony(w);
+  assert.equal(p.job.stage, 'recover-river'); assert.equal(p.cargo, null);
+  assert.deepEqual({ x: s.x, z: s.z }, { x: 5, z: 4 }); assert.ok(p.z > 3 && p.z < 4);
   balanced(w); assert.doesNotThrow(() => serializeColony(w, 0));
 });
 test('a thaw reroutes an underway loaded cart via a bridge without discarding cargo', () => {

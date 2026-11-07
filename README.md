@@ -2,6 +2,8 @@
 
 A continuously living, fictional 3D settlement. Observe households, real cargo, new districts, building additions, reuse and generations. The Sun, Moon, weather and river share the same world clock. There is one world, no comparison view, no rewind and no play/pause controls.
 
+Prosperous cities spread across six named neighborhoods, with eighteen functional building kinds. Schools, libraries, civic halls, markets, windmills, granaries, safety stations, waterworks and inns add staffed services. Six housing footprints and low/midrise additions replace the former repeated towers. Growth uses real materials and labor and remains bounded by the declared land/agent budgets.
+
 ![CHRONOS river city with 1,024 residents](docs/images/living-world.jpg)
 
 ## Open and explore
@@ -23,9 +25,9 @@ Housing, labor, local inventories, conserved cargo, food, tools, needs, migratio
 
 The environment has a fictional 192-day year, 48-day seasons and an approximately 29.53-day lunar cycle. Temperature, precipitation, mud and river ice affect production and travel. This is an approximate climate/sky model, not a real-world forecast or ice-safety guide. Full banking contagion, rigid-body cargo/fluid physics and coin wagons remain outside this implementation.
 
-A small persisted tabular model learns transport action values from completed deliveries in local, long and crossing contexts. Per-resident delivery experience also persists. It is not a neural society model or a guarantee of improvement on every world. See [model.md](model.md) for the data, update rule and evaluation limits.
+Two small persisted online contextual policies learn from actual outcomes: completed transport journeys, and outward construction/upgrades/repairs evaluated after work completes. City mind / L exposes reasons, pending observations, learned values, outcomes, district services and land span. Per-resident delivery experience also persists. This is online machine learning, not a neural society model or a guarantee of improvement on every world. See [model.md](model.md) for the data, update rules and evaluation limits.
 
-Autosave uses `chronos.colony`. Schema-2 living worlds are strictly validated and migrated to schema 3. Before the first automatic replacement, their original raw save is retained locally as `chronos.colony.before-river-city`; World offers a pre-migration export. Existing `chronos.world` timeline saves stay separate and exportable, with the compatible game at `archives/CHRONOS-timelines.html`. Keep portable copies: browser storage is not a backup. Unreadable saves, backup failures and other-tab changes are protected from silent overwrites.
+Autosave uses `chronos.colony`. Schema-2/3 worlds are strictly validated and migrated to schema 4. Before automatic replacement, the original raw save is retained locally as `chronos.colony.before-districts`; World offers a pre-migration export. An earlier `before-river-city` backup remains untouched. Existing `chronos.world` timeline saves stay separate and exportable, with the compatible game at `archives/CHRONOS-timelines.html`. Keep portable copies: browser storage is not a backup. Unreadable saves, backup failures and other-tab changes are protected from silent overwrites.
 
 ## Source and checks
 
@@ -48,7 +50,7 @@ npm run preview
 
 The build emits both the regular `dist/` site and self-contained root/dist `CHRONOS.html`; it asserts embedded syntax, no external scripts/styles, license inclusion and a below-1-MB size budget. The repository includes the ready-to-open `CHRONOS.html`. No dependency was added.
 
-`src/colony.js` owns the model, learning and schema-3 validation; `src/colony-v2.js` retains strict migration validation. `src/world-loop.js` and its embedded worker own time, forecasts and checkpoints. `src/app.js` owns observation and storage. `src/environment.js` supplies the shared sky/climate; `src/city.js`, `src/activity.js` and `src/architecture.js` render actual snapshots. `src/simulation.js` retains the earlier schema-1 timeline engine, excluded from the current game bundle.
+`src/colony.js` owns the model and schema-4 validation; `colony-v2.js` and `colony-v3.js` retain strict migration validation. `development.js` owns development learning. `world-loop.js` and its embedded worker own time, forecasts and checkpoints. `app.js` and `observation.js` own observation and storage. `environment.js` supplies the shared climate; `sky.js`, `city.js`, `activity.js` and `architecture.js` render actual snapshots. `simulation.js` retains the earlier schema-1 timeline engine, excluded from the current game bundle.
 
 See [status.md](status.md) for observed checks and remaining limits, [core.md](core.md) for model rules, and [requirements.md](requirements.md) for acceptance criteria. This replaces the active timeline experience at the user's request on 2026-11-06; it is not an additional selectable game mode.
 

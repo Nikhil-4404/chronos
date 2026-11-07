@@ -4,11 +4,11 @@ import { createColony, snapshotColony, serializeColony, deserializeColony, elaps
 import WorldWorker from './world-worker.js?worker&inline';
 import { runWorld } from './world-loop.js';
 import { buildingForm } from './architecture.js';
+import { escapeText as esc, mindMarkup } from './observation.js';
 
 const $ = s => document.querySelector(s);
-const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const KEY = 'chronos.colony'; // Earlier chronos.world timeline saves remain untouched.
-const BACKUP_KEY = 'chronos.colony.before-river-city';
+const BACKUP_KEY = 'chronos.colony.before-districts';
 let world, lastRaw = null, recovery = null, conflict = false, selected = null, following = null;
 let migrationRaw = null, previousRaw = null;
 let panel = null, layer = 'city', hudHidden = false, backlog = 0, lastSavedWall = 0;
@@ -18,10 +18,10 @@ const panelCache = {};
 try {
   lastRaw = localStorage.getItem(KEY);
   if (lastRaw) {
-    try { world = deserializeColony(lastRaw); backlog = elapsedTicks(world.savedAt); if (JSON.parse(lastRaw).schema === 2) migrationRaw = lastRaw; }
+    try { world = deserializeColony(lastRaw); backlog = elapsedTicks(world.savedAt); if ([2, 3].includes(JSON.parse(lastRaw).schema)) migrationRaw = lastRaw; }
     catch { recovery = lastRaw; initialMessage = 'Your unreadable save is protected. Download it from World. This temporary settlement will not overwrite it.'; }
   }
-  previousRaw = localStorage.getItem(BACKUP_KEY);
+  previousRaw = localStorage.getItem(BACKUP_KEY) || localStorage.getItem('chronos.colony.before-river-city');
 } catch { initialMessage = 'Browser storage is unavailable. Export your world to keep it.'; }
 world ||= createColony();
 $('#app').innerHTML = `
@@ -31,12 +31,13 @@ $('#app').innerHTML = `
 <div class="header-actions"><button id="guide" aria-label="Field guide">?</button><button id="fullscreen" aria-label="Enter fullscreen">⛶</button><button id="hide-hud" aria-label="Hide interface (H)">◌</button></div>
 <div class="metrics" aria-label="Settlement vitals"><div><span>RESIDENTS</span><strong id="population">24</strong><small id="population-detail"></small></div><div><span>PLACES</span><strong id="building-count">12</strong><small id="construction-detail"></small></div><div><span>FOOD STORED</span><strong id="food">280</strong><small id="food-detail"></small></div><div><span>WELLBEING</span><strong id="wellbeing">—</strong><small>Health · rest · connection</small></div></div></header>
 <div class="world-heading game-hud"><span class="live-dot"></span><span>NEW MERIDIAN</span><b>Observe a world becoming.</b></div>
-<nav class="rail game-hud" aria-label="Observation tools"><button data-panel="people" aria-expanded="false"><span aria-hidden="true">♧</span>Residents<kbd>N</kbd></button><button data-panel="places" aria-expanded="false"><span aria-hidden="true">⌂</span>Settlement<kbd>B</kbd></button><button data-panel="journal" aria-expanded="false"><span aria-hidden="true">≋</span>Chronicle<kbd>J</kbd></button><button data-panel="world" aria-expanded="false"><span aria-hidden="true">◈</span>World<kbd>W</kbd></button></nav>
+<nav class="rail game-hud" aria-label="Observation tools"><button data-panel="people" aria-expanded="false"><span aria-hidden="true">♧</span>Residents<kbd>N</kbd></button><button data-panel="places" aria-expanded="false"><span aria-hidden="true">⌂</span>Settlement<kbd>B</kbd></button><button data-panel="mind" aria-expanded="false"><span aria-hidden="true">✧</span>City mind<kbd>L</kbd></button><button data-panel="journal" aria-expanded="false"><span aria-hidden="true">≋</span>Chronicle<kbd>J</kbd></button><button data-panel="world" aria-expanded="false"><span aria-hidden="true">◈</span>World<kbd>W</kbd></button></nav>
 <aside id="observation-panel" class="observation-panel game-hud" hidden><div class="panel-title"><div><span class="eyebrow">FIELD NOTES</span><h2 id="panel-title">Residents</h2></div><button id="close-panel" aria-label="Close observation panel">×</button></div>
 <div id="people-pane" hidden><label for="resident-search">Find a resident</label><input id="resident-search" type="search" placeholder="Name or occupation…" autocomplete="off"/><div id="resident-list" class="entity-list"></div></div>
-<div id="places-pane" hidden><p class="muted">Every place begins with a need, delivered materials and neighbors’ work.</p><div id="place-list" class="entity-list"></div></div>
+<div id="places-pane" hidden><p class="muted">Neighborhoods spread along roads. Every place needs materials and neighbors’ work.</p><label for="place-filter">Explore the city’s buildings</label><select id="place-filter"><option value="">All places</option>${Object.entries(KINDS).map(([key, kind]) => `<option value="${key}">${esc(kind.label)}</option>`).join('')}</select><div id="place-list" class="entity-list"></div></div>
 <div id="journal-pane" hidden><div id="growth-history"></div><ol id="journal" class="journal"></ol></div>
 <div id="world-pane" hidden><span class="eyebrow">THE SETTLEMENT’S STORES</span><div id="resource-stores"></div><div id="development-stats"></div><hr/><span class="eyebrow">CARGO & RIVER TRADE</span><div id="logistics-stats"></div><div id="shipment-list" class="entity-list"></div><div id="dock-stats"></div><hr/><span class="eyebrow">LEARNING FROM JOURNEYS</span><div id="learning-stats"></div><p class="muted">Delivery outcomes update small, persistent travel estimates. These guide transport choices as the settlement changes.</p><p id="save-state" class="storage-state" role="status">Autosave ready</p><div class="button-row"><button id="export" class="primary">Export world</button><button id="import">Import world</button></div><button id="recovery" class="text-button" hidden>Download unreadable save</button><button id="previous-save" class="text-button" hidden>Export pre-migration world</button><button id="legacy" class="text-button" hidden>Export earlier timeline save</button><hr/><p class="muted">Life continues while you explore. One day passes in about 72 seconds. When you return, elapsed time is simulated in the background, up to seven real days.</p><p class="muted">This local world supports ${LIMITS.people} living residents and ${LIMITS.buildings} places. Buildings can grow, adapt and be reused. Families age on a compressed, fictional life cycle.</p><button id="new-world" class="text-button">Begin another world…</button></div>
+<div id="mind-pane" hidden><span class="eyebrow">GROWING INTO THE LAND</span><div id="footprint-stats"></div><div id="district-list"></div><hr/><span class="eyebrow">LEARNING THROUGH CONSEQUENCES</span><p class="muted">The city tries legal development choices, measures what happened afterward, and updates their values. Transport learns from completed cargo journeys.</p><div id="city-learning"></div><div id="decision-list"></div><hr/><span class="eyebrow">TRANSPORT EXPERIENCE</span><div id="transport-learning"></div></div>
 <section id="entity-details" hidden aria-label="Selected subject"><hr/><div id="detail-copy"></div><div class="button-row"><button id="focus-subject">Locate</button><button id="follow-subject">Follow resident</button></div></section></aside>
 <div class="layer-controls game-hud" role="group" aria-label="World overlay"><button data-layer="city" aria-pressed="true" class="active">Natural</button><button data-layer="routes" aria-pressed="false">Journeys</button><button data-layer="wellbeing" aria-pressed="false">Wellbeing</button></div>
 <div class="camera-tools game-hud" role="group" aria-label="Camera"><button data-camera="orbit" class="active" aria-pressed="true">Orbit</button><button data-camera="street" aria-pressed="false">Street</button><button data-camera="top" aria-pressed="false">Above</button><button data-camera="sky" aria-pressed="false">Sky</button><button id="reset-view" aria-label="Frame the settlement">↺</button></div><button id="follow-chip" class="follow-chip game-hud" hidden></button>
@@ -57,8 +58,8 @@ function setPanel(name) {
   if (name !== panel) $('#observation-panel').scrollTop = 0;
   panel = name; $('#observation-panel').hidden = !name;
   document.querySelectorAll('[data-panel]').forEach(b => { b.setAttribute('aria-expanded', String(b.dataset.panel === name)); b.classList.toggle('active', b.dataset.panel === name); });
-  for (const key of ['people', 'places', 'journal', 'world']) $(`#${key}-pane`).hidden = key !== name;
-  $('#panel-title').textContent = ({ people: 'Lives, unfolding.', places: 'A growing home.', journal: 'The chronicle.', world: 'Your world.' })[name] || '';
+  for (const key of ['people', 'places', 'journal', 'world', 'mind']) $(`#${key}-pane`).hidden = key !== name;
+  $('#panel-title').textContent = ({ people: 'Lives, unfolding.', places: 'A growing home.', journal: 'The chronicle.', world: 'Your world.', mind: 'A city that learns.' })[name] || '';
   $('#entity-details').hidden = !selected || !['people', 'places'].includes(name); pickerStamp = ''; renderPanel();
 }
 function selectEntity(entity) { selected = entity; if (entity) setPanel(entity.kind === 'citizen' ? 'people' : 'places'); else $('#entity-details').hidden = true; renderScene(); }
@@ -135,6 +136,13 @@ function renderHud() {
   }
 }
 const fact = (label, value) => `<div><dt>${esc(label)}</dt><dd>${esc(value)}</dd></div>`;
+function renderMind() {
+  const html = mindMarkup(current);
+  for (const [id, key] of [['footprint-stats', 'footprint'], ['district-list', 'districts'], ['city-learning', 'city'], ['decision-list', 'decisions'], ['transport-learning', 'transport']]) {
+    if (panelCache[`mind:${key}`] === html[key]) continue;
+    $(`#${id}`).innerHTML = html[key]; panelCache[`mind:${key}`] = html[key];
+  }
+}
 const gauge = (label, value) => `<div class="gauge"><div><span>${label}</span><b>${Math.round(value)}%</b></div><i style="--fill:${Math.max(0, Math.min(100, value))}%"></i></div>`;
 function renderPanel() {
   if (!panel || !current) return;
@@ -144,8 +152,9 @@ function renderPanel() {
     if (pickerStamp !== stamp) { pickerStamp = stamp; $('#resident-list').innerHTML = people.length ? people.map(p => `<button data-person="${p.id}"><span class="person-dot"></span><b>${esc(p.name)}</b><small>${p.role}</small><span>↗</span></button>`).join('') : '<p class="muted">No residents match this search.</p>'; }
   }
   if (panel === 'places') {
-    const stamp = current.buildings.map(b => `${b.id}:${Math.floor(b.progress * 100)}:${b.level}:${b.state}:${b.project?.type}:${Math.floor((b.project?.progress || 0) * 100)}`).join('|');
-    if (pickerStamp !== stamp) { pickerStamp = stamp; $('#place-list').innerHTML = [...current.buildings].sort((a, b) => Number(!a.project) - Number(!b.project) || a.progress - b.progress).map(b => `<button data-place="${b.id}"><span class="place-symbol">${b.project || b.progress < 1 ? '⚒' : b.kind === 'home' ? '⌂' : b.kind === 'dock' ? '⚓' : '◇'}</span><b>${esc(b.label)}</b><small>${b.project ? `${esc(b.project.type)} ${Math.floor(b.project.progress * 100)}%` : b.state === 'Derelict' ? 'Derelict' : b.progress < 1 ? `${Math.floor(b.progress * 100)}% built` : `Level ${b.level || 1}`}</small><span>↗</span></button>`).join(''); }
+    const filter = $('#place-filter').value, places = current.buildings.filter(b => !filter || b.kind === filter);
+    const stamp = `${filter}:` + places.map(b => `${b.id}:${Math.floor(b.progress * 100)}:${b.level}:${b.state}:${b.project?.type}:${Math.floor((b.project?.progress || 0) * 100)}`).join('|');
+    if (pickerStamp !== stamp) { pickerStamp = stamp; $('#place-list').innerHTML = [...places].sort((a, b) => Number(!a.project) - Number(!b.project) || a.progress - b.progress).map(b => `<button data-place="${b.id}"><span class="place-symbol">${b.project || b.progress < 1 ? '⚒' : b.kind === 'home' ? '⌂' : b.kind === 'dock' ? '⚓' : '◇'}</span><b>${esc(b.label)}</b><small>${b.project ? `${esc(b.project.type)} ${Math.floor(b.project.progress * 100)}%` : b.state === 'Derelict' ? 'Derelict' : b.progress < 1 ? `${Math.floor(b.progress * 100)}% built` : `Level ${b.level || 1}`}</small><span>↗</span></button>`).join('') || '<p class="muted">No places of this type yet. The settlement builds services as districts grow.</p>'; }
   }
   if (panel === 'journal') {
     const stamp = `${current.log.length}:${current.log.at(-1)?.tick}:${current.log.at(-1)?.text}:${current.history.at(-1)?.day}`;
@@ -167,6 +176,7 @@ function renderPanel() {
     $('#learning-stats').innerHTML = learning ? `<dl class="facts">${fact('Observed deliveries', learning.deliveries)}${fact('Travel contexts', learning.contexts.length)}${learning.contexts.filter(c => c.samples > 0).map(c => fact(`${c.context} / ${c.mode}`, `${c.samples} trips · ${(Number(c.meanDuration) * 10).toFixed(0)} min`)).join('')}</dl>` : '<p class="muted">Experience accumulates as shipments arrive.</p>';
     $('#recovery').hidden = recovery === null;
   }
+  if (panel === 'mind') renderMind();
   const detailsMatch = selected && ((selected.kind === 'citizen' && panel === 'people') || (selected.kind === 'building' && panel === 'places'));
   $('#entity-details').hidden = !detailsMatch;
   if (detailsMatch) {
@@ -177,16 +187,20 @@ function renderPanel() {
       const home = current.buildings.find(b => b.id === p.homeId), family = current.citizens.filter(c => c.homeId === p.homeId && c.id !== p.id);
       $('#detail-copy').innerHTML = `<span class="eyebrow">${p.role} / ${p.age < 12 ? 'YOUNG GENERATION' : p.age > 80 ? 'ELDER GENERATION' : 'ADULT'}</span><h3>${esc(p.name)}</h3><p class="subject-task"><span class="live-dot"></span>${esc(p.status)}</p><dl class="facts">${fact('Home', home?.label || 'Seeking a home')}${fact('Destination', current.buildings.find(b => b.id === p.destinationId)?.label || 'Home')}${fact('Household', family.map(p => p.name).join(', ') || 'A home of their own')}${fact('Children', p.children)}${p.cargo ? fact('Cargo', `${Number(p.cargo.amount).toFixed(1)} ${p.cargo.resource}`) + fact('Transport', p.mode || 'porter') : ''}</dl>${gauge('Health', p.health)}${gauge('Energy', p.energy)}${gauge('Hunger', p.hunger)}${gauge('Connection', p.social)}`;
       $('#follow-subject').hidden = false; $('#focus-subject').disabled = false;
+      if (p.experience) $('#detail-copy').insertAdjacentHTML('beforeend', `<dl class="facts">${fact('Deliveries learned from', p.experience.deliveries)}${p.experience.deliveries ? fact('Mean completed journey', `${Math.round(p.experience.meanTrip * 10)} min`) : ''}</dl>`);
     } else if (b) {
       $('#panel-title').textContent = b.label;
       const residents = current.citizens.filter(p => p.homeId === b.id), workers = current.citizens.filter(p => p.destinationId === b.id && /Building|Hauling|Retrofitting|Salvaging|Loading|Unloading/.test(p.task));
       const descriptions = { home: 'A home for rest, households and new generations.', farm: 'Workers and weather determine the harvest.', forestry: 'Foresters supply timber for an expanding settlement.', quarry: 'Masons gather stone for foundations and tools.', workshop: 'Wood and stone become tools that help builders.', shop: 'Neighbors eat from local stores. Carriers supply construction.', park: 'A common place for play and connection.', hospital: 'Neighbors in poor health come here for care.', dock: 'A river landing. Cargo needs a berth, loading time and a carrier before it can reach its destination.', mill: 'A working mill serving the river settlement.', civic: 'A gathering place serving the growing districts.' };
       const architecture = buildingForm(b).label;
+      Object.assign(descriptions, { school: 'Teachers support children and social connection.', library: 'Scholars share knowledge that supports local crafts.', council: 'Stewards organize maintenance across the neighborhood.', market: 'Merchants distribute local food to residents.', mill: 'Millers process food using timber and tools.', granary: 'Keepers hold and distribute food close to households.', firestation: 'Wardens maintain the condition of nearby buildings.', waterworks: 'Waterkeepers support the health of nearby residents.', inn: 'Hosts provide rest and a place to meet.' });
+      if (b.service) descriptions[b.kind] = b.service;
       const project = b.project;
       const projectCost = project ? project.cost.wood + project.cost.stone : 0;
       const materialProgress = project ? projectCost ? Math.min(1, (project.delivered.wood + project.delivered.stone) / projectCost) : 1 : b.delivered;
       const inventory = b.inventory ? Object.entries(b.inventory).filter(([, n]) => n >= 1).map(([k, n]) => `${Math.floor(n)} ${k}`).join(', ') : '';
       $('#detail-copy').innerHTML = `<span class="eyebrow">${project ? `${esc(project.type).toUpperCase()} / WORK IN PROGRESS` : esc(b.state || KINDS[b.kind].label).toUpperCase()}</span><h3>${esc(b.label)}</h3><p class="muted">${descriptions[b.kind] || 'A place serving the settlement.'}</p>${project || b.progress < 1 ? `${gauge(project?.type === 'expand' ? 'Addition' : project?.type === 'convert' ? 'Conversion' : project?.type === 'salvage' ? 'Salvage' : 'Construction', (project?.progress ?? b.progress) * 100)}${project?.type === 'salvage' ? '' : gauge('Materials delivered', materialProgress * 100)}<p class="muted">${workers.length ? workers.map(p => esc(p.name)).join(', ') : 'Crews are dispatched from nearby districts.'}</p>` : ''}<dl class="facts">${fact('Architecture', architecture || KINDS[b.kind].label)}${fact('Level', b.level || 1)}${fact('Condition', `${Math.round(b.condition ?? 100)}%`)}${b.additions?.length ? fact('Additions', b.additions.join(', ')) : ''}${fact('Founded', `Day ${Math.floor(b.founded / 144) + 1}`)}${inventory ? fact('Stored here', inventory) : ''}${b.kind === 'home' ? fact('Household', `${residents.length} / ${b.capacity} beds`) + fact('Residents', residents.map(p => p.name).join(', ') || 'Awaiting a household') : ''}</dl>`;
+      if (b.service) $('#detail-copy').insertAdjacentHTML('beforeend', `<dl class="facts">${fact('Assigned staff', b.staffed || 0)}${fact('District', b.district || 'Founding neighborhood')}</dl>`);
       $('#follow-subject').hidden = true; $('#focus-subject').disabled = false;
     } else { $('#detail-copy').innerHTML = '<p class="muted">This life is now part of the settlement’s history.</p>'; $('#follow-subject').hidden = true; $('#focus-subject').disabled = true; }
   }
@@ -230,6 +244,7 @@ document.addEventListener('click', e => {
   if (b.hasAttribute('data-close')) b.closest('dialog').close();
 });
 $('#resident-search').addEventListener('input', renderPanel);
+$('#place-filter').addEventListener('change', () => { pickerStamp = ''; renderPanel(); });
 $('#close-panel').onclick = () => { setPanel(null); $('#city-view canvas')?.focus(); };
 $('#focus-subject').onclick = focusSubject; $('#follow-subject').onclick = toggleFollow;
 $('#follow-chip').onclick = () => { city.setFollow(null); following = null; paintFollow(); };
@@ -249,12 +264,12 @@ $('#import-file').onchange = async e => {
 $('#confirm-action').onclick = () => { const action = confirmation; confirmation = null; $('#confirm-dialog').close(); action?.(); };
 $('#confirm-dialog').addEventListener('close', () => { confirmation = null; });
 $('#recovery').onclick = () => { if (recovery) download(recovery, 'chronos-unreadable-save.json'); };
-$('#previous-save').onclick = () => { if (previousRaw) download(previousRaw, 'chronos-before-river-city.json'); };
+$('#previous-save').onclick = () => { if (previousRaw) download(previousRaw, 'chronos-before-districts.json'); };
 try { $('#legacy').hidden = !localStorage.getItem('chronos.world'); } catch { /* Storage is optional. */ }
 $('#legacy').onclick = () => { try { const raw = localStorage.getItem('chronos.world'); if (raw) download(raw, 'chronos-earlier-timelines.json'); } catch { toast('Earlier storage is unavailable.'); } };
 document.addEventListener('keydown', e => {
   if (e.altKey || e.ctrlKey || e.metaKey || e.target.closest('input,select,textarea,dialog') || (e.target.closest('button') && e.key !== 'Escape')) return;
-  const k = e.key.toLowerCase(), panels = { n: 'people', b: 'places', j: 'journal', w: 'world' };
+  const k = e.key.toLowerCase(), panels = { n: 'people', b: 'places', j: 'journal', w: 'world', l: 'mind' };
   if (panels[k]) { e.preventDefault(); setPanel(panel === panels[k] ? null : panels[k]); }
   if (k === 'h') { e.preventDefault(); setHud(!hudHidden); } if (k === 'f') { e.preventDefault(); toggleFollow(); }
   if (['1', '2', '3', '4'].includes(k)) { e.preventDefault(); setCamera(({ 1: 'orbit', 2: 'street', 3: 'top', 4: 'sky' })[k]); }

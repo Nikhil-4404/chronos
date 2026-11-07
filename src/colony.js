@@ -1,5 +1,7 @@
 import { validateColony as validateV2 } from './colony-v2.js';
+import { validateColony as validateV3 } from './colony-v3.js';
 import { environmentAt } from './environment.js';
+import { chooseDevelopment, observeDevelopment, DEVELOPMENT_ACTIONS, DEVELOPMENT_CONTEXTS } from './development.js';
 
 export const TICKS_PER_DAY = 144;
 export const TICKS_PER_SECOND = 2;
@@ -22,7 +24,25 @@ export const KINDS = Object.freeze({
   park: { label: 'Common garden', wood: 8, stone: 8, labor: 34, jobs: 0 },
   hospital: { label: 'Care house', wood: 35, stone: 28, labor: 75, jobs: 6 },
   dock: { label: 'River pier', wood: 34, stone: 14, labor: 70, jobs: 8 },
+  school: { label: 'School', wood: 28, stone: 20, labor: 52, jobs: 3 },
+  library: { label: 'Library', wood: 30, stone: 28, labor: 64, jobs: 3 },
+  council: { label: 'Council hall', wood: 32, stone: 36, labor: 72, jobs: 3 },
+  market: { label: 'Market square', wood: 24, stone: 14, labor: 46, jobs: 5 },
+  mill: { label: 'Windmill', wood: 30, stone: 16, labor: 55, jobs: 4 },
+  granary: { label: 'Granary', wood: 26, stone: 12, labor: 48, jobs: 3 },
+  firestation: { label: 'Fire watch', wood: 24, stone: 28, labor: 52, jobs: 3 },
+  waterworks: { label: 'Waterworks', wood: 22, stone: 32, labor: 60, jobs: 3 },
+  inn: { label: 'Inn', wood: 30, stone: 18, labor: 54, jobs: 4 },
 });
+export const DISTRICTS = Object.freeze([
+  { id: 'oldtown', name: 'Old Town', x: 2, z: 4 }, { id: 'orchards', name: 'Orchard Quarter', x: -5, z: -4 },
+  { id: 'heights', name: 'Garden Heights', x: -5, z: 12 }, { id: 'foundry', name: 'Foundry Ward', x: 12, z: -4 },
+  { id: 'eastbank', name: 'Eastbank', x: 12, z: 5 }, { id: 'meadows', name: 'River Meadows', x: 12, z: 13 },
+]);
+export const districtFor = point => DISTRICTS.reduce((best, district) => Math.hypot(point.x - district.x, point.z - district.z) < Math.hypot(point.x - best.x, point.z - best.z) ? district : best);
+const CIVIC_KINDS = ['school', 'library', 'council', 'market', 'mill', 'granary', 'firestation', 'waterworks', 'inn'];
+const SERVICE_TASKS = { Teacher: 'Teaching children', Scholar: 'Sharing knowledge', Steward: 'Maintaining the ward', Merchant: 'Trading at the market', Miller: 'Milling provisions', Keeper: 'Managing food stores', Warden: 'Inspecting building safety', Waterkeeper: 'Supplying clean water', Host: 'Welcoming neighbors' };
+const emptyCityLearning = () => ({ policy: 'learned', observations: 0, estimates: {}, pending: [], recent: [] });
 // Preserve the schema-2 plot prefix; newly opened land follows the same ordering.
 export const PLOTS = Object.freeze(Array.from({ length: 28 * 26 }, (_, i) => ({ x: i % 28 - 9, z: Math.floor(i / 28) - 9 }))
   .filter(p => p.x !== 4 && p.x !== 5)
@@ -85,9 +105,20 @@ function nearest(w, p, predicate) {
   }
   return chosen;
 }
+function choosePlot(w, kind) {
+  const occupied = new Set(w.buildings.map(b => b.plotId)), free = PLOTS.filter(p => !occupied.has(p.id));
+  if (!w.buildings.length) return free[0];
+  const counts = Object.fromEntries(DISTRICTS.map(d => [d.id, w.buildings.filter(b => districtFor(b).id === d.id).length]));
+  const hub = DISTRICTS.reduce((best, d) => counts[d.id] < counts[best.id] ? d : best);
+  const industrial = ['quarry', 'forestry', 'workshop'].includes(kind), rural = ['farm', 'mill', 'granary'].includes(kind);
+  const desired = w.buildings.length < 25 ? DISTRICTS[0] : industrial && counts.foundry < 60 ? DISTRICTS[3] : rural && counts.orchards < 60 ? DISTRICTS[1] : hub;
+  const distanceToCity = p => Math.min(...w.buildings.filter(b => b.kind !== 'dock').map(b => Math.hypot(p.x - b.entrance.x, p.z - b.entrance.z)));
+  return free.map(p => ({ p, edge: distanceToCity(p) })).filter(({ edge }) => edge <= 3)
+    .sort((a, b) => (Math.hypot(a.p.x - desired.x, a.p.z - desired.z) + a.edge * .4) - (Math.hypot(b.p.x - desired.x, b.p.z - desired.z) + b.edge * .4))[0]?.p || free[0];
+}
 function makeBuilding(w, kind, ready = false, dockSide = null) {
   if (w.buildings.length >= LIMITS.buildings) return null;
-  const i = w.buildings.length, plot = PLOTS[i], variant = Math.floor(random(w) * 6);
+  const i = w.buildings.length, plot = ready || dockSide ? PLOTS[i] : choosePlot(w, kind), variant = Math.floor(random(w) * 6);
   const entrance = dockSide ? { x: dockSide === 'west' ? 4 : 6, z: dockSide === 'west' ? 2 : 6 } : { x: plot.x, z: plot.z };
   const b = { id: `place-${i + 1}`, plotId: dockSide ? `dock-${dockSide}` : plot.id,
     kind, originalKind: kind, variant, label: `${KINDS[kind].label} ${i + 1}`,
@@ -130,10 +161,10 @@ function addPerson(w, home, source, parentIds = []) {
   return p;
 }
 function emptyWorld(seed, now) {
-  return { schema: 3, seed, rng: seed >>> 0, tick: 0, savedAt: now, nextPerson: 1, nextShipment: 1,
+  return { schema: 4, seed, rng: seed >>> 0, tick: 0, savedAt: now, nextPerson: 1, nextShipment: 1,
     resources: inventory(), buildings: [], people: [], shipments: [], journal: [], history: [], weather: 'Clear', lastBirth: -144,
     totals: { births: 0, arrivals: 0, deaths: 0, completed: 0, deliveries: 0, upgrades: 0, reused: 0, salvaged: 0 },
-    learning: {}, economy: { initial: inventory(), produced: inventory(), consumed: inventory() } };
+    learning: {}, cityLearning: emptyCityLearning(), economy: { initial: inventory(), produced: inventory(), consumed: inventory() } };
 }
 export function createColony(seed = 731, now = Date.now()) {
   number(seed, 0, 4294967295, 'World seed', true);
@@ -154,8 +185,10 @@ export function createColony(seed = 731, now = Date.now()) {
 function assignJobs(w) {
   const adults = w.people.filter(p => p.age >= 12).sort((a, b) => ((serial(a.id) * 2654435761) >>> 0) - ((serial(b.id) * 2654435761) >>> 0));
   const n = adults.length, lowFood = w.resources.food < w.people.length * 4;
-  const quotas = { Farmer: Math.ceil(n * (lowFood ? .34 : .24)), Forester: Math.ceil(n * .12), Mason: Math.ceil(n * .1), Craftsperson: Math.ceil(n * .06), Carrier: Math.max(3, Math.ceil(n * .16)), Healer: Math.ceil(n * .025) };
-  const kinds = { Farmer: ['farm'], Forester: ['forestry'], Mason: ['quarry'], Craftsperson: ['workshop'], Carrier: ['shop', 'dock'], Healer: ['hospital'] };
+  const quotas = { Farmer: Math.ceil(n * (lowFood ? .3 : .21)), Forester: Math.ceil(n * .1), Mason: Math.ceil(n * .09), Craftsperson: Math.ceil(n * .06), Carrier: Math.max(3, Math.ceil(n * .18)), Healer: Math.ceil(n * .025),
+    ...Object.fromEntries(Object.keys(SERVICE_TASKS).map(role => [role, Math.max(1, Math.ceil(n * .012))])) };
+  const kinds = { Farmer: ['farm'], Forester: ['forestry'], Mason: ['quarry'], Craftsperson: ['workshop'], Carrier: ['shop', 'dock', 'granary', 'market'], Healer: ['hospital'],
+    Teacher: ['school'], Scholar: ['library'], Steward: ['council'], Merchant: ['market'], Miller: ['mill'], Keeper: ['granary'], Warden: ['firestation'], Waterkeeper: ['waterworks'], Host: ['inn'] };
   const counts = {}, loads = new Map();
   for (const p of adults) if (p.job) { counts[p.role] = (counts[p.role] || 0) + 1; if (p.workId) loads.set(p.workId, (loads.get(p.workId) || 0) + 1); }
   const work = Object.fromEntries(Object.entries(kinds).map(([role, allowed]) => [role, w.buildings.filter(b => usable(b) && allowed.includes(b.kind))]));
@@ -214,9 +247,10 @@ function go(w, p, target, task, env, mode = p.mode || 'porter', force = false) {
   p.task = task;
 }
 const arrived = p => p.routeIndex >= p.route.length - 1;
+const riverTrip = p => p.mode === 'barge' && ['river', 'recover-river'].includes(p.job?.stage);
 function move(p, env) {
-  if (p.mode === 'barge' && p.job?.stage === 'river' && env.river.frozen) return;
-  let distance = p.speed * (p.mode === 'cart' ? 1.35 * (1 - env.mud * .45) : p.mode === 'barge' && p.job?.stage === 'river' ? 2.4 : 1 - env.mud * .12);
+  if (riverTrip(p) && env.river.frozen) return;
+  let distance = p.speed * (p.mode === 'cart' ? 1.35 * (1 - env.mud * .45) : riverTrip(p) ? 2.4 : 1 - env.mud * .12);
   while (distance > .000001 && p.routeIndex < p.route.length - 1) {
     const next = p.route[p.routeIndex + 1], d = Math.abs(next.x - p.x) + Math.abs(next.z - p.z);
     if (d <= distance) { p.x = next.x; p.z = next.z; p.routeIndex++; distance -= d; p.walked += d; }
@@ -251,7 +285,7 @@ function dispatch(w, p, env) {
     if (needed > .000001) requests.push({ b, r, needed, priority: b.kind === 'home' ? 0 : 4, projectStarted: b.project.started });
   }
   for (const b of w.buildings) {
-    const desired = b.kind === 'workshop' && usable(b) ? { wood: 12, stone: 8 } : b.kind === 'shop' && usable(b) ? { food: Math.max(24, w.people.length / 2) } : b.project ? { tools: 1.5 } : null;
+    const desired = b.kind === 'workshop' && usable(b) ? { wood: 12, stone: 8 } : b.kind === 'mill' && usable(b) ? { wood: 8, tools: 1 } : ['shop', 'market', 'inn', 'granary'].includes(b.kind) && usable(b) ? { food: b.kind === 'shop' ? Math.max(24, w.people.length / 2) : 32 } : b.project ? { tools: 1.5 } : null;
     if (!desired) continue;
     for (const [r, target] of Object.entries(desired)) {
       const incoming = incomingFor(w, b, r, null);
@@ -267,7 +301,7 @@ function dispatch(w, p, env) {
   }
   for (const request of requests) for (const source of w.buildings) {
     if (source.id === request.b.id || !usable(source) || available(w, source, request.r) < 1) continue;
-    if (request.r === 'food' && source.kind !== 'farm' && !(source.kind === 'dock' && request.b.kind === 'dock')) continue;
+    if (request.r === 'food' && !['farm', 'mill'].includes(source.kind) && !(source.kind === 'dock' && request.b.kind === 'dock')) continue;
     if (request.r === 'tools' && source.kind !== 'workshop' && !(source.kind === 'dock' && request.b.kind === 'dock')) continue;
     if (source.kind === 'dock' && request.b.kind === 'dock' && source.inventory[request.r] < request.b.inventory[request.r] + 12) continue;
     const mode = chooseMode(w, source, request.b, env);
@@ -317,10 +351,25 @@ function haul(w, p, env) {
   if (!s) { p.job = null; p.cargo = null; p.mode = 'porter'; return; }
   const source = building(w, s.sourceId), destination = building(w, s.destinationId);
   let stage = p.job.stage;
-  if (stage === 'recover') {
-    if (s.mode === 'barge' && env.river.frozen) { p.task = 'Waiting for the river to thaw'; p.route = []; p.routeIndex = 0; return; }
-    const target = { id: destination.id, entrance: { x: s.x, z: s.z } };
-    go(w, p, target, 'Recovering cargo', env, p.mode);
+  if (stage === 'recover' || stage === 'recover-river') {
+    // Older saves could leave a barge rescuer mid-channel before the recovery-boat phase existed.
+    if (stage === 'recover' && s.mode === 'barge' && s.onRiver && p.x > 4 && p.x < 6) {
+      p.job.stage = stage = 'recover-river'; p.destinationId = destination.id;
+      p.route = [{ x: p.x, z: p.z }, { x: 5, z: p.z }, { x: 5, z: s.z }, { x: s.x, z: s.z }]; p.routeIndex = 0;
+    }
+    if (s.mode === 'barge' && env.river.frozen) { p.task = 'Waiting for the river to thaw'; if (stage === 'recover') { p.route = []; p.routeIndex = 0; } return; }
+    if (stage === 'recover' && s.mode === 'barge' && s.onRiver) {
+      const pier = nearest(w, p, b => b.kind === 'dock' && usable(b));
+      if (!pier) { p.task = 'Waiting for a recovery pier'; return; }
+      go(w, p, pier, 'Walking to the recovery boat', env, 'porter');
+      if (arrived(p)) {
+        p.job.stage = 'recover-river'; p.task = 'Piloting a recovery boat'; p.destinationId = destination.id;
+        p.route = [{ x: p.x, z: p.z }, { x: 5, z: pier.entrance.z }, { x: 5, z: s.z }, { x: s.x, z: s.z }]; p.routeIndex = 0;
+      }
+      return;
+    }
+    if (stage === 'recover-river') p.task = 'Piloting a recovery boat';
+    else { const target = { id: destination.id, entrance: { x: s.x, z: s.z } }; go(w, p, target, 'Recovering cargo', env, p.mode); }
     if (arrived(p)) {
       s.state = 'transit'; p.job.stage = 'deliver'; p.cargo = { resource: s.resource, amount: s.amount, sourceId: s.sourceId, destinationId: s.destinationId }; p.route = []; p.routeIndex = 0;
       if (s.mode === 'barge' && s.onRiver) enterRiver(p, s, destination);
@@ -356,7 +405,7 @@ function haul(w, p, env) {
 function chooseTask(w, p, env) {
   const hour = w.tick % TICKS_PER_DAY / 6, home = building(w, p.homeId);
   const eating = p.hunger > (p.job ? 83 : 58) || (p.task === 'Having lunch' && p.hunger > 12);
-  if (eating && !['river', 'load', 'unload'].includes(p.job?.stage)) {
+  if (eating && !['river', 'recover-river', 'load', 'unload'].includes(p.job?.stage)) {
     const food = nearest(w, p, b => usable(b) && available(w, b, 'food') > .1);
     if (food) { go(w, p, food, 'Having lunch', env); return; }
   }
@@ -381,12 +430,14 @@ function chooseTask(w, p, env) {
     } else {
       const target = building(w, p.workId);
       if (target && usable(target)) {
-        go(w, p, target, ({ Farmer: 'Growing food', Forester: 'Gathering timber', Mason: 'Quarrying stone', Craftsperson: 'Crafting tools', Healer: 'Caring for neighbors' })[p.role], env); return;
+        go(w, p, target, ({ Farmer: 'Growing food', Forester: 'Gathering timber', Mason: 'Quarrying stone', Craftsperson: 'Crafting tools', Healer: 'Caring for neighbors', ...SERVICE_TASKS })[p.role], env); return;
       }
     }
     go(w, p, home, 'Resting between projects', env);
+  } else if (p.age < 12 && hour >= 8 && hour < 15 && nearest(w, p, b => usable(b) && b.kind === 'school')) {
+    go(w, p, nearest(w, p, b => usable(b) && b.kind === 'school'), 'Learning at school', env);
   } else if (hour >= 17 && hour < 21 && p.energy > 25) {
-    go(w, p, nearest(w, p, b => usable(b) && b.kind === 'park') || home, p.age < 12 ? 'Playing' : 'Socializing', env);
+    go(w, p, nearest(w, p, b => usable(b) && ['park', 'library', 'market', 'inn'].includes(b.kind)) || home, p.age < 12 ? 'Playing' : 'Socializing', env);
   } else go(w, p, home, 'Resting at home', env);
 }
 function completeProject(w, b) {
@@ -408,6 +459,7 @@ function completeProject(w, b) {
     b.state = 'Active'; b.condition = 100; b.vacantDays = 0;
   }
   note(w, 'completion', `${b.label}: ${project.type === 'construct' ? 'construction finished' : project.type === 'expand' ? 'new rooms and usable space are ready' : project.type === 'convert' ? 'an old structure has a new purpose' : project.type === 'salvage' ? 'salvaged materials are available locally' : 'repairs are complete'}.`, { kind: 'building', id: b.id });
+  for (const decision of w.cityLearning.pending) if (decision.buildingId === b.id && decision.started === project.started) decision.completed = w.tick;
   b.project = null; assignJobs(w);
 }
 function workAndNeeds(w, p, env) {
@@ -420,7 +472,7 @@ function workAndNeeds(w, p, env) {
   p.health = clamp(p.health + (p.hunger > 93 ? -.55 : p.energy < 5 ? -.25 : .045) + (care ? .7 : 0), 0, 100);
   if (p.job?.kind === 'haul') {
     const s = w.shipments.find(s => s.id === p.job.shipmentId);
-    if (s && p.job.stage !== 'recover') { s.x = p.x; s.z = p.z; s.onRiver = p.job.stage === 'river'; }
+    if (s && !['recover', 'recover-river'].includes(p.job.stage)) { s.x = p.x; s.z = p.z; s.onRiver = p.job.stage === 'river'; }
   }
   if (!atPlace || !target) return;
   const factor = p.diligence * (p.energy > 15 ? 1 : .5) * (p.hunger < 85 ? 1 : .45);
@@ -430,6 +482,17 @@ function workAndNeeds(w, p, env) {
   if (w.resources.stone < cap && task === 'Quarrying stone') deposit(w, target, 'stone', factor * .3);
   if (task === 'Crafting tools' && w.resources.tools < cap) {
     if (available(w, target, 'wood') >= .05 && available(w, target, 'stone') >= .035) { consume(w, target, 'wood', .05); consume(w, target, 'stone', .035); deposit(w, target, 'tools', .11 * factor); }
+  }
+  if (task === 'Milling provisions' && w.resources.food < cap && available(w, target, 'wood') >= .015) {
+    consume(w, target, 'wood', .015); deposit(w, target, 'food', factor * (.25 + env.wind.speed * .02));
+  }
+  if (task === 'Learning at school' && w.people.some(q => q.role === 'Teacher' && q.destinationId === target.id && arrived(q))) p.social = clamp(p.social + .45, 0, 100);
+  if (SERVICE_TASKS[p.role] === task && w.tick % 12 === 0) {
+    if (['Teacher', 'Scholar', 'Merchant', 'Host'].includes(p.role)) for (const neighbor of w.people) if (Math.hypot(neighbor.x - p.x, neighbor.z - p.z) < 3) {
+      neighbor.social = clamp(neighbor.social + .8 * factor, 0, 100); if (p.role === 'Host') neighbor.energy = clamp(neighbor.energy + .5, 0, 100);
+    }
+    if (p.role === 'Waterkeeper') for (const neighbor of w.people) if (Math.hypot(neighbor.x - p.x, neighbor.z - p.z) < 4) neighbor.health = clamp(neighbor.health + .35 * factor, 0, 100);
+    if (['Steward', 'Warden', 'Keeper'].includes(p.role)) for (const place of w.buildings) if (Math.hypot(place.x - p.x, place.z - p.z) < 4) place.condition = clamp(place.condition + .05 * factor, 0, 100);
   }
   if (p.job?.kind === 'build' && target.project) {
     const project = target.project, delivered = sum(project.delivered), cost = sum(project.cost), ceiling = cost ? Math.min(1, delivered / cost) : 1;
@@ -441,6 +504,26 @@ function workAndNeeds(w, p, env) {
     if (project.type === 'construct') { target.progress = project.progress; target.delivered = ceiling; }
     if (project.progress >= 1 - .000001) completeProject(w, target);
   }
+}
+function footprint(w) {
+  const places = w.buildings.filter(b => b.kind !== 'dock'), minX = Math.min(...places.map(b => b.x)), maxX = Math.max(...places.map(b => b.x)), minZ = Math.min(...places.map(b => b.z)), maxZ = Math.max(...places.map(b => b.z));
+  return { minX, maxX, minZ, maxZ, area: (maxX - minX + 1) * (maxZ - minZ + 1) };
+}
+function serviceCoverage(w, district = null) {
+  const places = w.buildings.filter(b => usable(b) && (!district || districtFor(b).id === district.id));
+  return CIVIC_KINDS.filter(kind => places.some(b => b.kind === kind)).length / CIVIC_KINDS.length;
+}
+function cityOutcome(w, target) {
+  return { wellbeing: wellbeing(w), food: w.resources.food / Math.max(1, w.people.length), coverage: serviceCoverage(w, districtFor(target)), condition: target.condition };
+}
+function evaluateCityLearning(w) {
+  w.cityLearning.pending = w.cityLearning.pending.filter(decision => {
+    const finished = decision.completed !== null && w.tick - decision.completed >= 7 * 144, overdue = decision.completed === null && w.tick - decision.started >= 28 * 144;
+    if (!finished && !overdue) return true;
+    const target = building(w, decision.buildingId);
+    observeDevelopment(w.cityLearning, decision, { ...cityOutcome(w, target), completed: finished }, w.tick);
+    return false;
+  });
 }
 function plan(w) {
   const projects = w.buildings.filter(b => b.project), n = w.people.length;
@@ -458,24 +541,63 @@ function plan(w) {
   else if (count('hospital') < Math.ceil(n / 85)) kind = 'hospital';
   else if (count('park') < Math.ceil(n / 55)) kind = 'park';
   else if (w.resources.food < n * 3 && count('farm') * 8 < Math.ceil(n * .45)) kind = 'farm';
-  if (kind) {
+  const civicCounts = Object.fromEntries(CIVIC_KINDS.map(k => [k, w.buildings.filter(b => b.kind === k && b.state !== 'Derelict').length]));
+  const missingCivic = n >= 60 && [...CIVIC_KINDS].sort((a, b) => civicCounts[a] - civicCounts[b]).find(k => civicCounts[k] < Math.max(1, Math.ceil(n / 180)));
+  if (!kind && missingCivic) kind = missingCivic;
+  // Prosperous mature towns open lower-density neighborhoods rather than only stacking existing homes.
+  if (!kind && n >= 100 && w.resources.food > n * 6 && w.buildings.length < LIMITS.buildings) {
+    const cycle = ['home', 'park', 'home', 'market', 'farm', 'home', 'inn', 'school', 'waterworks', 'home', 'workshop', 'library', 'home', 'granary', 'firestation', 'mill', 'home', 'council'];
+    kind = cycle[w.totals.completed % cycle.length];
+  }
+  const damaged = w.buildings.find(b => b.condition < 65 && b.state === 'Active' && !b.project);
+  const expandable = kind && w.buildings.filter(b => b.kind === kind && usable(b) && !b.project && b.level < (kind === 'home' ? 5 : 3))
+    .sort((a, b) => a.level - b.level || a.founded - b.founded)[0];
+  const eligible = [kind && w.buildings.length < LIMITS.buildings && 'outward', expandable && 'upgrade', damaged && 'repair'].filter(Boolean);
+  const context = futureBeds < n + 8 ? 'crowded' : w.resources.food < n * 3 ? 'declining' : missingCivic ? 'underserved' : 'prosperous';
+  const choice = chooseDevelopment(w.cityLearning, context, eligible);
+  const record = b => {
+    if (!b?.project || w.cityLearning.pending.length >= 32) return;
+    const reason = `${choice.exploring ? 'Exploring' : 'Applying learned value for'} ${choice.action}; ${context === 'crowded' ? 'households need room' : context === 'underserved' ? 'district services are missing' : context === 'declining' ? 'supplies need recovery' : 'surplus supports neighborhood development'}.`;
+    w.cityLearning.pending.push({ buildingId: b.id, started: b.project.started, completed: null, context, action: choice.action, kind: b.kind, reason, exploring: choice.exploring, baseline: cityOutcome(w, b) });
+    note(w, 'city-mind', `${b.label} in ${districtFor(b).name}: ${reason}`, { kind: 'building', id: b.id });
+  };
+  if (choice?.action === 'repair') { beginProject(w, damaged, 'repair'); record(damaged); return; }
+  if (choice?.action === 'upgrade') { beginProject(w, expandable, 'expand'); record(expandable); return; }
+  if (kind && choice?.action === 'outward') {
     const reuse = w.buildings.find(b => b.state === 'Derelict' && !b.project && b.kind !== 'dock' && occupants(w, b.id) === 0);
     if (reuse && kind === 'home') { beginProject(w, reuse, 'convert', 'home'); return; }
-    const expandable = w.buildings.filter(b => b.kind === kind && usable(b) && !b.project && b.level < (kind === 'home' ? 5 : 3))
-      .sort((a, b) => b.level - a.level || a.founded - b.founded)[0];
-    // Alternate additions with new land so a prosperous city changes both density and footprint.
-    if (expandable && (w.buildings.length >= LIMITS.buildings || w.totals.completed % 3 !== 0)) { beginProject(w, expandable, 'expand'); return; }
-    if (makeBuilding(w, kind)) return;
+    const b = makeBuilding(w, kind); if (b) { record(b); return; }
   }
   const derelict = w.buildings.find(b => b.state === 'Derelict' && !b.project && !b.additions.includes('salvaged-roof') && occupants(w, b.id) === 0);
   if (derelict) { beginProject(w, derelict, 'salvage'); return; }
-  const damaged = w.buildings.find(b => b.condition < 65 && b.state === 'Active' && !b.project);
   if (damaged) beginProject(w, damaged, 'repair');
+}
+function relocateHouseholds(w) {
+  const occupied = new Map(); for (const p of w.people) occupied.set(p.homeId, (occupied.get(p.homeId) || 0) + 1);
+  const residences = homes(w), moved = new Set(); let relocations = 0;
+  for (const p of w.people) {
+    if (relocations >= Math.max(1, Math.ceil(w.people.length / 90))) break;
+    if (p.age < 18 || !p.workId || moved.has(p.id)) continue;
+    const work = building(w, p.workId), previous = building(w, p.homeId);
+    if (!work || !usable(work)) continue;
+    const oldDistance = Math.abs(work.x - previous.x) + Math.abs(work.z - previous.z);
+    if (oldDistance < 8) continue;
+    const parents = [p.id, p.partnerId].filter(Boolean);
+    const household = w.people.filter(q => q.homeId === previous.id && (parents.includes(q.id) || q.age < 18 && q.parentIds.some(id => parents.includes(id))));
+    const next = residences.filter(home => home.id !== previous.id && home.capacity - (occupied.get(home.id) || 0) >= household.length)
+      .map(home => ({ home, distance: Math.abs(work.x - home.x) + Math.abs(work.z - home.z) }))
+      .filter(candidate => candidate.distance + 3 < oldDistance).sort((a, b) => a.distance - b.distance)[0]?.home;
+    if (!next) continue;
+    for (const member of household) { member.homeId = next.id; moved.add(member.id); if (!member.job) { member.route = []; member.routeIndex = 0; } }
+    occupied.set(previous.id, occupied.get(previous.id) - household.length); occupied.set(next.id, (occupied.get(next.id) || 0) + household.length); relocations++;
+    note(w, 'household', `${p.name}'s household moved to ${next.label.toLowerCase()} in ${districtFor(next).name} for a shorter journey to work.`, { kind: 'citizen', id: p.id });
+  }
 }
 function dailyLife(w, env) {
   const day = Math.floor(w.tick / TICKS_PER_DAY);
   w.weather = env.weather;
   note(w, 'weather', `${env.season} day ${day + 1}: ${env.weather.toLowerCase()}, ${Math.round(env.temperature)}°C. ${env.river.frozen ? 'River shipping is closed by ice; land routes remain available.' : 'River piers are open to cargo.'}`);
+  evaluateCityLearning(w);
   for (const p of w.people) p.age++;
   const dead = w.people.filter(p => p.age >= p.lifespan || p.health <= 0), deadIds = new Set(dead.map(p => p.id));
   for (const p of dead) {
@@ -509,10 +631,10 @@ function dailyLife(w, env) {
     const home = homes(w).find(h => occupants(w, h.id) === 0);
     if (home) { p.homeId = home.id; p.route = []; p.routeIndex = 0; note(w, 'household', `${p.name} established a new household.`, { kind: 'citizen', id: p.id }); }
   }
-  pairHouseholds(w); assignJobs(w);
+  pairHouseholds(w); assignJobs(w); relocateHouseholds(w);
   const occupied = new Set(w.people.flatMap(p => [p.homeId, p.workId]).filter(Boolean));
   for (const b of w.buildings) if (complete(b) && b.kind !== 'dock') {
-    if (!occupied.has(b.id) && !b.project && !['park', 'hospital'].includes(b.kind)) {
+    if (!occupied.has(b.id) && !b.project && !['park', 'hospital', ...CIVIC_KINDS].includes(b.kind)) {
       b.vacantDays++; b.state = b.vacantDays >= 24 ? 'Derelict' : 'Vacant'; b.condition = Math.max(20, b.condition - 1);
     } else { if (b.state !== 'Derelict') b.state = 'Active'; b.vacantDays = 0; b.condition = Math.max(20, b.condition - .08); }
     if (b.project && w.tick - b.project.lastWorked > 144 * 3) {
@@ -538,23 +660,30 @@ export function stepColony(w, ticks = 1) {
 }
 export function snapshotColony(w) {
   const environment = environmentAt(w.tick, w.seed), projects = w.buildings.filter(b => b.project);
+  const staff = new Map(); for (const person of w.people) if (person.workId) staff.set(person.workId, (staff.get(person.workId) || 0) + 1);
   const docks = w.buildings.filter(b => b.kind === 'dock' && usable(b)).map(b => {
     const queued = w.shipments.filter(s => s.mode === 'barge' && ['loading', 'unloading'].includes(s.state) && (s.state === 'loading' ? s.sourceId : s.destinationId) === b.id);
     return { id: b.id, buildingId: b.id, x: b.entrance.x, z: b.entrance.z, berths: 1, occupied: Number(queued.length > 0), queue: Math.max(0, queued.length - 1) };
   });
   return { seed: w.seed, tick: w.tick, clock: w.tick % 144, day: Math.floor(w.tick / 144) + 1, season: environment.season, weather: environment.weather, environment,
     buildings: w.buildings.map(b => ({ ...b, entrance: { ...b.entrance }, inventory: { ...b.inventory }, materials: { ...b.materials }, additions: [...b.additions], project: b.project ? structuredClone(b.project) : null,
-      district: `${b.z < 4 ? 'North' : 'South'} ${b.x < 5 ? 'Westbank' : 'Eastbank'}` })),
+      district: districtFor(b).name, staffed: staff.get(b.id) || 0,
+      service: ({ school: 'Classes improve children’s social needs', library: 'Scholars support local connection', council: 'Stewards maintain nearby structures', market: 'Food distribution and neighborhood trade', mill: 'Wind-powered food processing uses timber', granary: 'Local food storage and condition care', firestation: 'Wardens maintain nearby structures', waterworks: 'Staffed clean water improves nearby health', inn: 'Hosts restore visitors’ rest and connection' })[b.kind] || null })),
     citizens: w.people.map(p => ({ ...p, parentIds: [...p.parentIds], experience: { ...p.experience }, job: p.job ? { ...p.job } : null, cargo: p.cargo ? { ...p.cargo } : null,
-      status: !arrived(p) ? `${p.mode === 'barge' && p.job?.stage === 'river' ? 'Sailing' : 'Walking'} · ${p.task.toLowerCase()}` : p.task,
+      status: !arrived(p) ? `${riverTrip(p) ? 'Sailing' : 'Walking'} · ${p.task.toLowerCase()}` : p.task,
       wellbeing: p.health * .4 + p.energy * .2 + (100 - p.hunger) * .25 + p.social * .15,
       route: [{ x: p.x, z: p.z }, ...p.route.slice(p.routeIndex + 1).map(point => ({ ...point }))] })),
     shipments: w.shipments.map(s => ({ ...s })), docks, effects: {}, resources: { ...w.resources }, capacity: housing(w),
     metrics: { wellbeing: wellbeing(w), supply: w.resources.food, power: 100, travel: 0, treasury: 0 }, totals: { ...w.totals },
     logistics: { active: w.shipments.length, delivered: w.totals.deliveries, waiting: docks.reduce((n, d) => n + d.queue, 0), stalled: projects.filter(b => w.tick - b.project.lastWorked > 432).length,
       modeCounts: Object.fromEntries(['porter', 'cart', 'barge'].map(mode => [mode, w.shipments.filter(s => s.mode === mode).length])) },
-    development: { floorArea: w.buildings.filter(complete).reduce((n, b) => n + b.level * 22, 0), upgrades: w.totals.upgrades, reused: w.totals.reused, salvaged: w.totals.salvaged, districts: new Set(w.buildings.map(b => `${b.x < 5}:${b.z < 4}`)).size },
-    learning: { deliveries: w.totals.deliveries, contexts: Object.entries(w.learning).map(([key, e]) => ({ context: key.split(':')[0], mode: key.split(':')[1], ...e })) },
+    development: { floorArea: w.buildings.filter(complete).reduce((n, b) => n + b.level * 22, 0), upgrades: w.totals.upgrades, reused: w.totals.reused, salvaged: w.totals.salvaged, districts: new Set(w.buildings.map(b => districtFor(b).id)).size,
+      footprint: footprint(w), serviceCoverage: serviceCoverage(w), districtDetails: DISTRICTS.map(d => ({ name: d.name, center: { x: d.x, z: d.z }, places: w.buildings.filter(b => districtFor(b).id === d.id).length,
+        population: w.people.filter(p => districtFor(building(w, p.homeId)).id === d.id).length, services: CIVIC_KINDS.filter(k => w.buildings.some(b => b.kind === k && usable(b) && districtFor(b).id === d.id)) })) },
+    learning: { deliveries: w.totals.deliveries, contexts: Object.entries(w.learning).map(([key, e]) => ({ context: key.split(':')[0], mode: key.split(':')[1], ...e })),
+      city: { policy: 'contextual bandit', observations: w.cityLearning.observations, pending: w.cityLearning.pending.length,
+        contexts: Object.entries(w.cityLearning.estimates).map(([key, e]) => ({ context: key.split(':')[0], action: key.split(':')[1], ...e })),
+        recent: [...w.cityLearning.recent.map(d => ({ ...d })), ...w.cityLearning.pending.map(d => ({ tick: d.started, targetId: d.buildingId, context: d.context, action: d.action, kind: d.kind, reason: d.reason, reward: null, status: d.completed === null ? 'building' : 'observing', exploring: d.exploring }))].sort((a,b) => b.tick - a.tick).slice(0, 16) } },
     log: w.journal.map(e => ({ ...e, entity: e.entity ? { ...e.entity } : null })), history: w.history.map(h => ({ ...h })) };
 }
 export function resourceBalance(w) {
@@ -576,7 +705,7 @@ function stock(value, keys = RESOURCES) { fields(value, keys, 'inventory'); for 
 export function migrateColony(old) {
   validateV2(old);
   const w = structuredClone(old), stocks = { ...w.resources };
-  w.schema = 3; w.nextShipment = 1; w.shipments = []; w.learning = {}; w.economy = { initial: inventory(), produced: inventory(), consumed: inventory() };
+  w.schema = 4; w.nextShipment = 1; w.shipments = []; w.learning = {}; w.cityLearning = emptyCityLearning(); w.economy = { initial: inventory(), produced: inventory(), consumed: inventory() };
   Object.assign(w.totals, { deliveries: 0, upgrades: 0, reused: 0, salvaged: 0 });
   for (const b of w.buildings) {
     Object.assign(b, { originalKind: b.kind, level: 1, state: 'Active', condition: 100, vacantDays: 0, additions: [], inventory: inventory(), materials: materials(), project: null });
@@ -595,8 +724,8 @@ export function migrateColony(old) {
   return w;
 }
 export function validateColony(w) {
-  fields(w, ['schema', 'seed', 'rng', 'tick', 'savedAt', 'nextPerson', 'nextShipment', 'resources', 'buildings', 'people', 'shipments', 'journal', 'history', 'weather', 'totals', 'lastBirth', 'learning', 'economy'], 'world');
-  if (w.schema !== 3) throw new Error('Choose a CHRONOS living-world save.');
+  fields(w, ['schema', 'seed', 'rng', 'tick', 'savedAt', 'nextPerson', 'nextShipment', 'resources', 'buildings', 'people', 'shipments', 'journal', 'history', 'weather', 'totals', 'lastBirth', 'learning', 'cityLearning', 'economy'], 'world');
+  if (w.schema !== 4) throw new Error('Choose a CHRONOS living-world save.');
   for (const k of ['seed', 'rng']) number(w[k], 0, 4294967295, k, true);
   number(w.tick, 0, 1e10, 'world age', true); number(w.savedAt, 0, 1e15, 'save time'); number(w.nextPerson, 1, 1e10, 'resident sequence', true); number(w.nextShipment, 1, 1e10, 'cargo sequence', true); number(w.lastBirth, -144, w.tick, 'birth time', true);
   if (!['Clear', 'Cloudy', 'Rain', 'Snow', 'Dry', 'Drought'].includes(w.weather)) throw new Error('Invalid weather.');
@@ -604,14 +733,18 @@ export function validateColony(w) {
   fields(w.totals, ['births', 'arrivals', 'deaths', 'completed', 'deliveries', 'upgrades', 'reused', 'salvaged'], 'totals'); Object.values(w.totals).forEach(n => number(n, 0, 1e10, 'total', true));
   if (!Array.isArray(w.buildings) || w.buildings.length < 12 || w.buildings.length > LIMITS.buildings || !Array.isArray(w.people) || w.people.length > LIMITS.people || !Array.isArray(w.shipments) || w.shipments.length > LIMITS.shipments) throw new Error('Invalid settlement size.');
   cargoChanged(w);
-  const bIds = new Set();
+  const bIds = new Set(), occupiedPlots = new Set(), plotsById = new Map(PLOTS.map(p => [p.id, p]));
   for (let i = 0; i < w.buildings.length; i++) {
     const b = w.buildings[i];
     fields(b, ['id', 'plotId', 'kind', 'originalKind', 'variant', 'label', 'x', 'z', 'entrance', 'capacity', 'progress', 'delivered', 'founded', 'completed', 'level', 'state', 'condition', 'vacantDays', 'additions', 'inventory', 'materials', 'project'], 'building');
     if (b.id !== `place-${i + 1}` || !Object.hasOwn(KINDS, b.kind) || !Object.hasOwn(KINDS, b.originalKind)) throw new Error('Invalid building reference.');
     if (b.kind === 'dock') {
       if (!['dock-west', 'dock-east'].includes(b.plotId) || b.x !== (b.plotId === 'dock-west' ? 4.5 : 5.5) || b.entrance.x !== (b.plotId === 'dock-west' ? 4 : 6) || b.entrance.z !== (b.plotId === 'dock-west' ? 2 : 6) || b.z !== b.entrance.z + .5) throw new Error('Invalid pier position.');
-    } else if (b.plotId !== PLOTS[i].id || b.x !== PLOTS[i].x + .5 || b.z !== PLOTS[i].z + .5 || b.entrance.x !== PLOTS[i].x || b.entrance.z !== PLOTS[i].z) throw new Error('Invalid building plot.');
+    } else {
+      const plot = plotsById.get(b.plotId);
+      if (!plot || b.x !== plot.x + .5 || b.z !== plot.z + .5 || b.entrance.x !== plot.x || b.entrance.z !== plot.z) throw new Error('Invalid building plot.');
+    }
+    if (occupiedPlots.has(b.plotId)) throw new Error('Two buildings occupy one plot.'); occupiedPlots.add(b.plotId);
     point(b.entrance); number(b.variant, 0, 5, 'architecture', true); text(b.label, 80, 'building name'); number(b.capacity, 0, 40, 'housing', true); number(b.level, 1, 5, 'floors', true); number(b.condition, 0, 100, 'condition'); number(b.vacantDays, 0, 1e9, 'vacancy', true);
     if (!['Active', 'Vacant', 'Derelict'].includes(b.state) || !Array.isArray(b.additions) || b.additions.length > 8 || b.additions.some(a => !['upper-floor', 'shopfront', 'courtyard-shed', 'converted-home', 'salvaged-roof'].includes(a))) throw new Error('Invalid building lifecycle.');
     if (b.kind !== 'home' && b.capacity !== 0) throw new Error('Invalid housing capacity.');
@@ -633,7 +766,7 @@ export function validateColony(w) {
     } else if (!complete(b)) throw new Error('Missing construction project.');
     bIds.add(b.id);
   }
-  const pIds = new Set(), roles = ['Child', 'Builder', 'Farmer', 'Forester', 'Mason', 'Craftsperson', 'Carrier', 'Healer'];
+  const pIds = new Set(), roles = ['Child', 'Builder', 'Farmer', 'Forester', 'Mason', 'Craftsperson', 'Carrier', 'Healer', ...Object.keys(SERVICE_TASKS)];
   for (const p of w.people) {
     fields(p, ['id', 'name', 'homeId', 'workId', 'role', 'age', 'born', 'lifespan', 'parentIds', 'partnerId', 'children', 'x', 'z', 'hunger', 'energy', 'health', 'social', 'sociability', 'diligence', 'speed', 'destinationId', 'task', 'route', 'routeIndex', 'harvest', 'walked', 'job', 'cargo', 'mode', 'experience'], 'resident');
     if (typeof p.id !== 'string' || !/^resident-[1-9]\d{0,9}$/.test(p.id) || serial(p.id) >= w.nextPerson || pIds.has(p.id) || !bIds.has(p.homeId) || building(w, p.homeId).kind !== 'home' || !complete(building(w, p.homeId)) || !bIds.has(p.destinationId) || p.workId !== null && !bIds.has(p.workId) || !roles.includes(p.role)) throw new Error('Invalid resident reference.');
@@ -645,7 +778,7 @@ export function validateColony(w) {
     fields(p.experience, ['deliveries', 'meanTrip'], 'experience'); number(p.experience.deliveries, 0, 1e10, 'experience count', true); number(p.experience.meanTrip, 0, 1e10, 'trip estimate');
     if (p.job !== null) {
       if (p.job.kind === 'build') { fields(p.job, ['kind', 'destinationId'], 'work assignment'); if (!bIds.has(p.job.destinationId)) throw new Error('Invalid work target.'); }
-      else { fields(p.job, ['kind', 'shipmentId', 'stage', 'elapsed'], 'cargo assignment'); if (p.job.kind !== 'haul' || typeof p.job.shipmentId !== 'string' || !['pickup', 'load', 'river', 'deliver', 'unload', 'recover'].includes(p.job.stage)) throw new Error('Invalid cargo assignment.'); number(p.job.elapsed, 0, 10000, 'loading time', true); }
+      else { fields(p.job, ['kind', 'shipmentId', 'stage', 'elapsed'], 'cargo assignment'); if (p.job.kind !== 'haul' || typeof p.job.shipmentId !== 'string' || !['pickup', 'load', 'river', 'deliver', 'unload', 'recover', 'recover-river'].includes(p.job.stage)) throw new Error('Invalid cargo assignment.'); number(p.job.elapsed, 0, 10000, 'loading time', true); }
     }
     if (p.cargo !== null) { fields(p.cargo, ['resource', 'amount', 'sourceId', 'destinationId'], 'carried cargo'); if (!RESOURCES.includes(p.cargo.resource) || !bIds.has(p.cargo.sourceId) || !bIds.has(p.cargo.destinationId)) throw new Error('Invalid cargo references.'); number(p.cargo.amount, 0, 30, 'carried load'); }
     pIds.add(p.id);
@@ -659,7 +792,7 @@ export function validateColony(w) {
     if (!['porter', 'cart', 'barge'].includes(s.mode) || !['local', 'long', 'crossing'].includes(s.context) || !['reserved', 'loading', 'transit', 'unloading', 'stranded'].includes(s.state) || typeof s.loaded !== 'boolean' || typeof s.onRiver !== 'boolean') throw new Error('Invalid shipment state.');
     number(s.amount, .000001, 30, 'load'); number(s.created, 0, w.tick, 'shipment time', true); number(s.x, -20, 30, 'cargo position'); number(s.z, -20, 30, 'cargo position'); if (s.projectStarted !== null) number(s.projectStarted, 0, w.tick, 'cargo project', true);
     const carrier = s.carrierId && w.people.find(p => p.id === s.carrierId);
-    if (carrier && (carrier.job?.kind !== 'haul' || carrier.job.shipmentId !== s.id || Boolean(carrier.cargo) !== s.loaded && carrier.job.stage !== 'recover')) throw new Error('Cargo and worker disagree.');
+    if (carrier && (carrier.job?.kind !== 'haul' || carrier.job.shipmentId !== s.id || Boolean(carrier.cargo) !== s.loaded && !['recover', 'recover-river'].includes(carrier.job.stage))) throw new Error('Cargo and worker disagree.');
     if (carrier?.cargo && (carrier.cargo.resource !== s.resource || carrier.cargo.amount !== s.amount || carrier.cargo.sourceId !== s.sourceId || carrier.cargo.destinationId !== s.destinationId)) throw new Error('Carried load disagrees with shipment.');
     if (s.loaded !== ['transit', 'unloading', 'stranded'].includes(s.state) || s.onRiver && s.mode !== 'barge') throw new Error('Cargo phase disagrees with inventory.');
     if (!carrier && s.state !== 'stranded') throw new Error('Unassigned cargo is not recoverable.'); sIds.add(s.id);
@@ -672,6 +805,23 @@ export function validateColony(w) {
   if (!w.learning || typeof w.learning !== 'object' || Array.isArray(w.learning) || Object.keys(w.learning).length > 9) throw new Error('Invalid learned policy.');
   for (const [key, e] of Object.entries(w.learning)) {
     if (!/^(local|long|crossing):(porter|cart|barge)$/.test(key)) throw new Error('Invalid learning context.'); fields(e, ['samples', 'meanDuration', 'meanAmount', 'value'], 'learned estimate'); number(e.samples, 1, 1e10, 'samples', true); number(e.meanDuration, 0, 1e10, 'duration'); number(e.meanAmount, 0, 30, 'mean load'); number(e.value, 0, 30, 'action value');
+  }
+  fields(w.cityLearning, ['policy', 'observations', 'estimates', 'pending', 'recent'], 'city learning');
+  const mind = w.cityLearning;
+  if (!['learned', 'baseline'].includes(mind.policy) || !mind.estimates || typeof mind.estimates !== 'object' || Array.isArray(mind.estimates) || Object.keys(mind.estimates).length > 12 || !Array.isArray(mind.pending) || mind.pending.length > 32 || !Array.isArray(mind.recent) || mind.recent.length > 12) throw new Error('Invalid city learning.');
+  number(mind.observations, 0, 1e10, 'city observations', true);
+  for (const [key, e] of Object.entries(mind.estimates)) {
+    if (!/^(crowded|underserved|prosperous|declining):(outward|upgrade|repair)$/.test(key)) throw new Error('Invalid city learning context.');
+    fields(e, ['samples', 'value', 'meanReward'], 'city estimate'); number(e.samples, 1, 1e10, 'city samples', true); number(e.value, -2, 2, 'city value'); number(e.meanReward, -2, 2, 'city reward');
+  }
+  if (Object.values(mind.estimates).reduce((sum, e) => sum + e.samples, 0) !== mind.observations) throw new Error('City observations disagree with samples.');
+  for (const d of [...mind.pending, ...mind.recent]) {
+    const pending = Object.hasOwn(d, 'buildingId');
+    fields(d, pending ? ['buildingId', 'started', 'completed', 'context', 'action', 'kind', 'reason', 'exploring', 'baseline'] : ['tick', 'targetId', 'context', 'action', 'kind', 'reason', 'reward', 'status', 'exploring'], 'city decision');
+    if (!bIds.has(pending ? d.buildingId : d.targetId) || !DEVELOPMENT_CONTEXTS.includes(d.context) || !DEVELOPMENT_ACTIONS.includes(d.action) || !Object.hasOwn(KINDS, d.kind) || typeof d.exploring !== 'boolean') throw new Error('Invalid city decision.');
+    text(d.reason, 240, 'decision reason'); number(pending ? d.started : d.tick, 0, w.tick, 'decision time', true);
+    if (pending) { if (d.completed !== null) number(d.completed, d.started, w.tick, 'observation start', true); fields(d.baseline, ['wellbeing', 'food', 'coverage', 'condition'], 'decision baseline'); number(d.baseline.wellbeing, 0, 100, 'baseline wellbeing'); number(d.baseline.food, 0, 1e9, 'baseline food'); number(d.baseline.coverage, 0, 1, 'baseline coverage'); number(d.baseline.condition, 0, 100, 'baseline condition'); }
+    else { number(d.reward, -2, 2, 'observed reward'); if (d.status !== 'evaluated') throw new Error('Invalid observation stage.'); }
   }
   if (!Array.isArray(w.journal) || w.journal.length > LIMITS.journal || !Array.isArray(w.history) || w.history.length > LIMITS.history) throw new Error('Invalid history size.');
   let previous = 0;
@@ -690,6 +840,7 @@ export function deserializeColony(raw) {
   if (typeof raw !== 'string' || raw.length > MAX_SAVE_BYTES) throw new Error('Choose a living-world save smaller than 2 MB.');
   let w; try { w = JSON.parse(raw); } catch { throw new Error('The save is not valid JSON.'); }
   if (w?.schema === 2) w = migrateColony(w);
+  if (w?.schema === 3) { validateV3(w); w = structuredClone(w); w.schema = 4; w.cityLearning = emptyCityLearning(); }
   return validateColony(w);
 }
 export function elapsedTicks(savedAt, now = Date.now()) {

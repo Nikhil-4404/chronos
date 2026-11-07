@@ -8,10 +8,10 @@ Updated 2026-11-07. The manifest and package-lock.json remain the canonical inve
 | Rendering | Three.js 0.187.0 / OrbitControls; stable-ID animation, varied building components, physical cargo visuals and environment-driven sky. |
 | Build | Vite 8.3.6 and scripts/build-offline.mjs; regular dist site plus identical root/dist CHRONOS.html with an inline worker. |
 | Model | Deterministic colony.js transitions, local stock/cargo conservation and environment.js; no external AI/backend or whole-history snapshots. |
-| Learning | Persisted tabular transport action values and observed journey means; model.md records data/equations/limits. |
+| Learning | Persisted online contextual bandits for transport and development, delayed measured rewards and City mind observation; development.js/model.md record equations and limits. |
 | Runtime | Shared world-loop.js in a background worker or page fallback; timestamped frames and fractional recovery checkpoints. |
-| Persistence | Strict schema-3 JSON, validated schema-2 migration, local raw backup and guarded localStorage autosave/export/import. |
-| Compatibility | Retained schema-2 validator and earlier schema-1 engine/archive; chronos.world remains untouched. |
+| Persistence | Strict schema-4 JSON, validated schema-2/3 migration, local raw backup and guarded localStorage autosave/export/import. |
+| Compatibility | Retained schema-2/3 validators and earlier schema-1 engine/archive; chronos.world remains untouched. |
 | Tests | Node built-in node:test; actual browser workflows separately recorded. |
 
 Run with Node 22.12+ (development runtime 22.21.1, npm 10.9.4). From this directory: npm.cmd ci, npm.cmd run dev, npm.cmd test, npm.cmd run build, npm.cmd run preview. The offline bundler checks embedded program syntax, licenses, a single bundled entry, no external script/style imports and below 1 MB. Generated source index.html requires an HTTP server; CHRONOS.html is self-contained. Direct file launch remains browser-unverified because the test browser blocks that protocol.
